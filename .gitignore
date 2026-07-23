@@ -1,0 +1,46 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+uvicorn_output.log
+last_100_lines.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python build
+build/
+dist/
+*.egg-info/
+
+# Migrations cache
+.mypy_cache/
+.ruff_cache/
+
+# Uploads
+uploads/
+
+# Database
+*.db
+*.sqlite3
+foxflow.db
