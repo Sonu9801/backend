@@ -1,76 +1,46 @@
-# Node.js
-node_modules/
-.next/
-dist/
-build/
-coverage/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
 # Python
+venv/
+.venv/
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+*.pyo
 
-# Environment Variables
+# Environment
 .env
 .env.*
 !.env.example
 
-# Pytest / Coverage
-.pytest_cache/
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-
-# Virtual Environments
-venv/
-ENV/
-env.bak/
-venv.bak/
-
 # Logs
 *.log
-logs/
+uvicorn_output.log
+last_100_lines.log
 
-# OS/IDEs
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-.idea/
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
 .vscode/
-*.swp
-*.swo
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python build
+build/
+dist/
+*.egg-info/
+
+# Migrations cache
+.mypy_cache/
+.ruff_cache/
+
+# Uploads
+uploads/
+
+# Database
+*.db
+*.sqlite3
+foxflow.db

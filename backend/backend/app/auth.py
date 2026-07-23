@@ -27,7 +27,7 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(days=365)  # Long lived refresh token (1 year)
+        expire = datetime.utcnow() + timedelta(days=7)  # Long lived refresh token
     to_encode.update({"exp": expire, "type": "refresh"})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
