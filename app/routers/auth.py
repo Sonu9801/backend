@@ -1,154 +1,99 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+"""
+Authentication router.
+
+Endpoints:
+  POST /auth/login          — Password-based login (email/mobile + password)
+  POST /auth/register       — Register a new user (with hashed password)
+  POST /auth/worker-login   — Worker login (mobile + password)
+  POST /auth/refresh        — Refresh access token (cookie or body)
+  POST /auth/logout         — Invalidate session + clear cookies
+  POST /auth/logout-all     — Invalidate ALL sessions for current user
+  POST /auth/change-password — Change password (authenticated)
+  GET  /auth/google         — Redirect to Google OAuth consent
+  GET  /auth/google/callback — Handle Google OAuth callback
+  POST /auth/device         — Register push notification device
+  GET  /auth/me             — Get current user profile
+"""
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from app.database import get_db
-from app.models.user import User
-from app.schemas.user import UserCreate, UserResponse, Token
-from app.auth import create_access_token, create_refresh_token, get_current_user, get_current_active_user, RoleChecker
-from jose import JWTError, jwt
-from app.config import settings
+from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
-import smtplib
-import random
-from email.message import EmailMessage
-from datetime import datetime, timedelta
+
+from app.database import get_db
+from app.models.user import User
+from app.models.device import Device
+from app.schemas.user import UserCreate, UserResponse, LoginRequest, ChangePasswordRequest
+from app.auth import (
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+    get_current_active_user,
+    set_auth_cookies,
+    clear_auth_cookies,
+    RoleChecker,
+)
+from app.security import hash_password, verify_password, needs_rehash
+from app.session_store import session_store
+from app.cache import user_cache
+from app.config import settings
+from jose import JWTError, jwt
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-class OtpRequest(BaseModel):
-    email: str
 
-class OtpVerify(BaseModel):
-    email: str
-    otp_code: str
-
-@router.post("/request-otp")
-def request_otp(data: OtpRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Email not registered"
-        )
-        
-    otp = str(random.randint(100000, 999999))
-    user.otp_code = otp
-    user.otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
-    db.commit()
-
-    try:
-        # Always print OTP for local development visibility
-        print("\n" + "="*50)
-        print(f" NEW OTP REQUESTED")
-        print(f" OTP for {user.email} is: {otp}")
-        print("="*50 + "\n")
-        
-        if settings.SMTP_USER:
-            from app.email_utils import send_otp_email
-            send_otp_email(data.email, otp, user.name)
-            
-    except Exception as e:
-        print(f"Failed to send email: {e}")
-        # Return success anyway for dev mode so they can still see it in console
-        pass
-
-    return {"message": "OTP sent successfully"}
-
-@router.post("/verify-otp")
-def verify_otp(data: OtpVerify, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or OTP",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-        
-    if user.otp_code != data.otp_code:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or OTP",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-        
-    if not user.otp_expires_at or user.otp_expires_at < datetime.utcnow():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OTP has expired",
-        )
-
-    if hasattr(user, "is_active") and not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
-        
-    user.otp_code = None
-    user.otp_expires_at = None
-    db.commit()
-
-    access_token = create_access_token(data={"sub": user.email, "role": user.role})
-    refresh_token = create_refresh_token(data={"sub": user.email, "role": user.role})
-    
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "username": user.email,
-        "role": user.role,
-        "name": user.name
-    }
+# ─── Request/Response Models ─────────────────────────────────────────────────
 
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+    refresh_token: Optional[str] = None  # Optional — can come from cookie
 
 class DeviceRegistrationRequest(BaseModel):
     device_token: str
     device_type: Optional[str] = None
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(user_in: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user_in.email).first()
-    if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    # hashed_pwd = get_password_hash(user_in.password) # UserCreate has no password
-    user = User(
-        email=user_in.email,
-        name=user_in.name,
-        role=user_in.role,
-        dealer_name=user_in.dealer_name
+
+# ─── Helper: Build login response ────────────────────────────────────────────
+
+def _build_login_response(user: User, response: Response, is_worker: bool = False):
+    """
+    Shared logic for login and worker-login:
+      1. Create server-side session
+      2. Create JWT tokens (bound to session)
+      3. Set HttpOnly cookies
+      4. Update last_login
+      5. Return JSON body
+    """
+    sub = f"worker:{user.id}" if is_worker else user.email
+    role = "worker" if is_worker else user.role
+
+    # Create session
+    session_id = session_store.create_session(
+        user_id=user.id,
+        role=role,
+        ttl_days=settings.SESSION_EXPIRE_DAYS,
     )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
 
-@router.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # Try email first, then mobile number
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user:
-        user = db.query(User).filter(User.mobile_number == form_data.username).first()
-        
-    if not user or user.password != form_data.password:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email/mobile or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
+    # Create tokens bound to session
+    token_data = {"sub": sub, "role": role}
+    access_token = create_access_token(data=token_data, session_id=session_id)
+    refresh_token = create_refresh_token(data=token_data, session_id=session_id)
 
-    access_token = create_access_token(data={"sub": user.email, "role": user.role})
-    refresh_token = create_refresh_token(data={"sub": user.email, "role": user.role})
-    
+    # Set cookies
+    set_auth_cookies(response, access_token, refresh_token)
+
+    # Update last_login (fire-and-forget, don't block on this)
+    # We'll handle the DB update in the endpoint itself
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
+        "session_id": session_id,
         "username": user.email,
-        "role": user.role,
+        "email": user.email,
+        "role": role,
         "id": user.id,
         "worker_id": user.id,
         "name": user.name,
@@ -163,65 +108,214 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         "aadhar_number": user.aadhaar_number,
     }
 
+
+# ─── POST /auth/login ────────────────────────────────────────────────────────
+
+@router.post("/login")
+def login(
+    response: Response,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    """
+    Password-based login. Accepts email or mobile number as username.
+    
+    Sets HttpOnly cookies AND returns tokens in JSON body for
+    backward compatibility with PWA/mobile clients.
+    """
+    # Try email first, then mobile number
+    user = db.query(User).filter(User.email == form_data.username).first()
+    if not user:
+        user = db.query(User).filter(User.mobile_number == form_data.username).first()
+
+    if not user or not user.password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email/mobile or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not verify_password(form_data.password, user.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email/mobile or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="Inactive user")
+
+    # Auto-upgrade plaintext passwords to bcrypt on successful login
+    if needs_rehash(user.password):
+        user.password = hash_password(form_data.password)
+
+    user.last_login = datetime.utcnow()
+    db.commit()
+
+    return _build_login_response(user, response)
+
+
+# ─── GET /auth/setup-status ──────────────────────────────────────────────────
+
+@router.get("/setup-status")
+def setup_status(db: Session = Depends(get_db)):
+    """Check if the system has no users registered yet (first-run setup)."""
+    user_count = db.query(User).count()
+    return {"setup_required": user_count == 0}
+
+
+# ─── POST /auth/register ─────────────────────────────────────────────────────
+
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def register(user_in: UserCreate, db: Session = Depends(get_db)):
+    """
+    Register a new user:
+    - If 0 users in database, allow setup and force role to "admin".
+    - If >0 users in database, only allow registration if user exists with password IS NULL (invite).
+    """
+    user_count = db.query(User).count()
+    
+    if user_count == 0:
+        # First-run setup: allow registration and force role as admin
+        db_user = db.query(User).filter(User.email == user_in.email).first()
+        if db_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
+            )
+        user = User(
+            email=user_in.email,
+            name=user_in.name,
+            role="admin",  # Force first user to be admin
+            dealer_name=user_in.dealer_name,
+            password=hash_password(user_in.password),
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
+    else:
+        # Normal invite-only registration
+        db_user = db.query(User).filter(User.email == user_in.email).first()
+        if not db_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Registration is closed. Please ask your administrator for an invite.",
+            )
+        
+        if db_user.password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This email has already set up a password and registered.",
+            )
+        
+        # User is invited, but password is not set
+        db_user.name = user_in.name
+        db_user.password = hash_password(user_in.password)
+        db_user.is_active = True
+        if user_in.dealer_name:
+            db_user.dealer_name = user_in.dealer_name
+        
+        db.commit()
+        db.refresh(db_user)
+        return db_user
+
+
+# ─── POST /auth/worker-login ─────────────────────────────────────────────────
+
 @router.post("/worker-login")
-def worker_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # Assuming username field is used for mobile number
-    worker = db.query(User).filter(User.mobile_number == form_data.username, User.role.ilike("worker")).first()
-    if not worker or worker.password != form_data.password:
+def worker_login(
+    response: Response,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    """Worker login via mobile number + password/PIN."""
+    worker = db.query(User).filter(
+        User.mobile_number == form_data.username,
+        User.employee_id.isnot(None),
+    ).first()
+
+    if not worker or not worker.password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect mobile number or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if not verify_password(form_data.password, worker.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect mobile number or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if worker.employment_status != "Active":
         raise HTTPException(status_code=400, detail="Inactive worker")
-    
-    # We prefix worker token sub with 'worker:' to distinguish from admin users if needed
-    sub = f"worker:{worker.id}"
-    access_token = create_access_token(data={"sub": sub, "role": "worker"})
-    refresh_token = create_refresh_token(data={"sub": sub, "role": "worker"})
-    
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "worker_id": worker.id,
-        "id": worker.id,
-        "name": worker.name,
-        "role": "worker",
-        "employee_id": worker.employee_id,
-        "shift_name": worker.shift_type,
-        "mobile_number": worker.mobile_number,
-        "address": worker.address,
-        "emergency_contact_number": worker.emergency_contact_number,
-        "profile_photo_url": worker.profile_photo_url,
-        "designation": worker.designation,
-        "department": worker.department,
-        "aadhar_number": worker.aadhaar_number,
-    }
+
+    # Auto-upgrade plaintext passwords
+    if needs_rehash(worker.password):
+        worker.password = hash_password(form_data.password)
+
+    worker.last_login = datetime.utcnow()
+    db.commit()
+
+    return _build_login_response(worker, response, is_worker=True)
+
+
+# ─── POST /auth/refresh ──────────────────────────────────────────────────────
 
 @router.post("/refresh")
-def refresh_access_token(body: RefreshTokenRequest, db: Session = Depends(get_db)):
+def refresh_access_token(
+    request: Request,
+    response: Response,
+    body: RefreshTokenRequest = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Refresh the access token.
+    
+    Reads refresh_token from cookie first, then from request body.
+    Validates the session is still active before issuing a new access token.
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired refresh token",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # Get refresh token: cookie first, then body
+    token = request.cookies.get("refresh_token")
+    if not token and body and body.refresh_token:
+        token = body.refresh_token
+    if not token:
+        raise credentials_exception
+
     try:
-        payload = jwt.decode(body.refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         if payload.get("type") != "refresh":
             raise credentials_exception
         username: str = payload.get("sub")
         role: str = payload.get("role", "operator")
+        session_id: str = payload.get("sid")
         if username is None:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-        
-    # Check if user still exists/active
+
+    # Validate session (if present in token)
+    if session_id:
+        session = session_store.get_session(session_id)
+        if session is None:
+            raise credentials_exception
+
+    # Check if user still exists and is active
     if username.startswith("worker:"):
         worker_id = int(username.split(":")[1])
-        user = db.query(User).filter(User.id == worker_id, User.role.ilike("worker")).first()
+        user = db.query(User).filter(
+            User.id == worker_id,
+            User.employee_id.isnot(None),
+        ).first()
         if not user or user.employment_status != "Active":
             raise credentials_exception
     else:
@@ -229,41 +323,208 @@ def refresh_access_token(body: RefreshTokenRequest, db: Session = Depends(get_db
         if not user or not user.is_active:
             raise credentials_exception
 
-    new_access_token = create_access_token(data={"sub": username, "role": role})
+    # Issue new access token (same session)
+    new_access_token = create_access_token(
+        data={"sub": username, "role": role},
+        session_id=session_id,
+    )
+
+    # Update the access_token cookie
+    cookie_kwargs = {
+        "httponly": True,
+        "secure": settings.COOKIE_SECURE,
+        "samesite": settings.COOKIE_SAMESITE,
+        "path": "/",
+    }
+    if settings.COOKIE_DOMAIN:
+        cookie_kwargs["domain"] = settings.COOKIE_DOMAIN
+    response.set_cookie(
+        key="access_token",
+        value=new_access_token,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        **cookie_kwargs,
+    )
+
     return {"access_token": new_access_token, "token_type": "bearer"}
+
+
+# ─── POST /auth/logout ───────────────────────────────────────────────────────
+
+@router.post("/logout")
+def logout(
+    request: Request,
+    response: Response,
+    current_user=Depends(get_current_active_user),
+):
+    """Invalidate the current session and clear auth cookies."""
+    # Try to get session_id from the access token
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+
+    if token:
+        try:
+            payload = jwt.decode(
+                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+            )
+            session_id = payload.get("sid")
+            if session_id:
+                session_store.invalidate_session(session_id)
+        except JWTError:
+            pass  # Token invalid — just clear cookies anyway
+
+    # Invalidate cache for this user
+    user_cache.invalidate(f"email:{current_user.email}")
+    user_cache.invalidate(f"user:{current_user.id}")
+
+    # Clear cookies
+    clear_auth_cookies(response)
+
+    return {"message": "Logged out successfully"}
+
+
+# ─── POST /auth/logout-all ───────────────────────────────────────────────────
+
+@router.post("/logout-all")
+def logout_all(
+    response: Response,
+    current_user=Depends(get_current_active_user),
+):
+    """Invalidate ALL sessions for the current user (logout everywhere)."""
+    count = session_store.invalidate_all_user_sessions(current_user.id)
+
+    # Invalidate cache
+    user_cache.invalidate(f"email:{current_user.email}")
+    user_cache.invalidate(f"user:{current_user.id}")
+
+    # Clear cookies on this device
+    clear_auth_cookies(response)
+
+    return {"message": f"Logged out from {count} session(s)"}
+
+
+# ─── POST /auth/change-password ──────────────────────────────────────────────
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Change password for the authenticated user."""
+    if not current_user.password:
+        raise HTTPException(
+            status_code=400,
+            detail="Account uses OAuth login. Set a password first.",
+        )
+
+    if not verify_password(payload.old_password, current_user.password):
+        raise HTTPException(
+            status_code=400,
+            detail="Current password is incorrect",
+        )
+
+    current_user.password = hash_password(payload.new_password)
+    db.commit()
+
+    # Invalidate cache so next request picks up updated user
+    user_cache.invalidate(f"email:{current_user.email}")
+    user_cache.invalidate(f"user:{current_user.id}")
+
+    return {"message": "Password changed successfully"}
+
+
+# ─── GET /auth/google ─────────────────────────────────────────────────────────
+
+@router.get("/google")
+async def google_login(request: Request):
+    """Redirect to Google OAuth consent screen."""
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=501,
+            detail="Google OAuth is not configured",
+        )
+    from app.oauth import oauth
+    redirect_uri = settings.GOOGLE_REDIRECT_URI or str(
+        request.url_for("google_callback")
+    )
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+
+@router.get("/google/callback")
+async def google_callback(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Handle Google OAuth callback — creates/links user, sets session + cookies."""
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=501, detail="Google OAuth is not configured")
+
+    from app.oauth import oauth, get_or_create_user_from_google
+
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"OAuth error: {str(e)}")
+
+    google_user = token.get("userinfo")
+    if not google_user:
+        google_user = await oauth.google.userinfo(token=token)
+
+    user = get_or_create_user_from_google(db, dict(google_user))
+    if not user:
+        redirect = RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invite_only", status_code=302)
+        return redirect
+
+    user.last_login = datetime.utcnow()
+    db.commit()
+
+    # Build session + tokens
+    session_id = session_store.create_session(
+        user_id=user.id,
+        role=user.role,
+        ttl_days=settings.SESSION_EXPIRE_DAYS,
+    )
+    token_data = {"sub": user.email, "role": user.role}
+    access_token = create_access_token(data=token_data, session_id=session_id)
+    refresh_token = create_refresh_token(data=token_data, session_id=session_id)
+
+    # Redirect to frontend with cookies set
+    redirect = RedirectResponse(url=settings.FRONTEND_URL, status_code=302)
+    set_auth_cookies(redirect, access_token, refresh_token)
+    return redirect
+
+
+# ─── POST /auth/device ────────────────────────────────────────────────────────
 
 @router.post("/device", status_code=status.HTTP_201_CREATED)
 def register_device(
-    request: DeviceRegistrationRequest, 
-    current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    request_body: DeviceRegistrationRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
-    device = db.query(Device).filter(Device.device_token == request.device_token).first()
-    
-    if hasattr(current_user, "employment_status"):
-        worker_id = current_user.id
-        user_id = None
-    else:
-        user_id = current_user.id
-        worker_id = None
-        
+    """Register a push notification device token."""
+    device = db.query(Device).filter(
+        Device.device_token == request_body.device_token
+    ).first()
+
     if device:
-        device.user_id = user_id
-        device.worker_id = worker_id
-        device.device_type = request.device_type
+        device.user_id = current_user.id
+        device.device_type = request_body.device_type
         device.is_active = True
     else:
         device = Device(
-            device_token=request.device_token,
-            device_type=request.device_type,
-            user_id=user_id,
-            worker_id=worker_id
+            device_token=request_body.device_token,
+            device_type=request_body.device_type,
+            user_id=current_user.id,
         )
         db.add(device)
     db.commit()
     return {"message": "Device registered successfully"}
 
+
+# ─── GET /auth/me ─────────────────────────────────────────────────────────────
+
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_active_user)):
+    """Get the current authenticated user's profile."""
     return current_user
-

@@ -220,52 +220,62 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
         sp = salary_profiles.get(w.id)
         pr = records.get(w.id)
         
-        present = sum(1 for l in w_logs if l.status == "Present")
-        half = sum(1 for l in w_logs if l.status == "Half Day")
-        absent = sum(1 for l in w_logs if l.status == "Absent")
+        base_salary = (sp.monthly_salary if (sp and sp.monthly_salary) else 20000.0)
+        daily_rate = base_salary / last_day
+        hourly_rate = daily_rate / 8.0
+        sunday_hourly_rate = hourly_rate * 2.0
+        
+        present = sum(1 for l in w_logs if (l.status or "").lower() == "present")
+        half = sum(1 for l in w_logs if (l.status or "").lower() == "half day")
+        absent = sum(1 for l in w_logs if (l.status or "").lower() == "absent")
         ot_hrs = sum(l.ot_hours or 0.0 for l in w_logs)
         
         sunday_hrs = 0.0
+        ot_amount = 0.0
+        sunday_amount = 0.0
+        regular_earned = 0.0
+        
         for l in w_logs:
+            s = (l.status or "").lower()
+            is_sun = False
             try:
                 if isinstance(l.date, str):
                     dt = datetime.strptime(l.date, "%Y-%m-%d").date()
                 else:
                     dt = l.date
-                    
-                if dt.weekday() == 6 and l.status == "Present":
-                    sunday_hrs += 8.0
-                elif dt.weekday() == 6 and l.status == "Half Day":
-                    sunday_hrs += 4.0
-            except Exception as e:
-                pass
+                if dt.weekday() == 6:
+                    is_sun = True
+            except Exception:
+                is_sun = bool(l.is_sunday)
                 
-        ot_amount = ot_hrs * (sp.ot_rate_per_hour if sp else 0.0)
-        sunday_amount = sunday_hrs * (sp.sunday_rate_per_hour if sp else 0.0)
-        
-        base_salary = 0.0
-        if sp:
-            if sp.salary_type == "Monthly":
-                base_salary = sp.monthly_salary or 0.0
-            elif sp.salary_type == "DailyWage":
-                base_salary = (sp.daily_wage or 0.0) * (present + (half * 0.5))
+            worked_h = l.net_working_hours or 0.0
+            ot_h = l.ot_hours or 0.0
+            reg_h = max(0.0, worked_h - ot_h)
+            
+            if is_sun and (s in ["present", "half day"] or worked_h > 0):
+                sunday_hrs += worked_h
+                sunday_amount += worked_h * sunday_hourly_rate
+            else:
+                regular_earned += reg_h * hourly_rate
+                ot_amount += ot_h * hourly_rate
                 
         bonus_amount = 0.0
         deductions = advances_by_worker.get(w.id, 0.0)
         
         # Override with DB record if exists
         if pr:
-            base_salary = pr.base_salary
-            ot_amount = pr.ot_amount
-            sunday_amount = pr.sunday_amount
-            bonus_amount = pr.bonus_amount
-            deductions = pr.deductions
+            base_salary = pr.base_salary or base_salary
+            ot_amount = pr.ot_amount if pr.ot_amount is not None else ot_amount
+            sunday_amount = pr.sunday_amount if pr.sunday_amount is not None else sunday_amount
+            bonus_amount = pr.bonus_amount or 0.0
+            deductions = pr.deductions if pr.deductions is not None else deductions
             status = pr.status
+            total_salary = base_salary + ot_amount + sunday_amount
+            final_salary = pr.final_salary or (total_salary + bonus_amount - deductions)
         else:
             status = "Draft"
-            
-        total_salary = base_salary + ot_amount + sunday_amount
-        final_salary = total_salary + bonus_amount - deductions
+            total_salary = regular_earned + ot_amount + sunday_amount
+            final_salary = total_salary + bonus_amount - deductions
         
         results.append({
             "id": w.id,

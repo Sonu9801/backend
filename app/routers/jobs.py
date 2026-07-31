@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from datetime import datetime
+from sqlalchemy.orm import Session, joinedload
+from datetime import datetime, date
 from typing import List
 
 from app.database import get_db
@@ -62,6 +62,38 @@ async def assign_job(payload: ProductionJobCreate, db: Session = Depends(get_db)
     
     return job
 
+@router.get("/worker/{worker_id}/today", response_model=List[ProductionJobResponse])
+def get_worker_today_jobs(worker_id: int, db: Session = Depends(get_db)):
+    """Returns all of today's jobs for the worker including completed ones (for overview stats)."""
+    worker = db.query(User).filter(User.id == worker_id).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    today_end = datetime.combine(date.today(), datetime.max.time())
+
+    # Get active (non-completed) jobs assigned to worker
+    active_jobs = db.query(ProductionJob).filter(
+        ProductionJob.workers.any(id=worker_id),
+        ProductionJob.status.notin_(["completed", "rejected"])
+    ).all()
+
+    # Get today's completed jobs
+    completed_today = db.query(ProductionJob).filter(
+        ProductionJob.workers.any(id=worker_id),
+        ProductionJob.status == "completed",
+        ProductionJob.end_time >= today_start,
+        ProductionJob.end_time <= today_end
+    ).all()
+
+    # Merge, avoiding duplicates
+    all_job_ids = {j.id for j in active_jobs}
+    merged = list(active_jobs)
+    for j in completed_today:
+        if j.id not in all_job_ids:
+            merged.append(j)
+    return merged
+
 @router.get("/worker/{worker_id}", response_model=List[ProductionJobResponse])
 def get_worker_jobs(worker_id: int, db: Session = Depends(get_db)):
     worker = db.query(User).filter(User.id == worker_id).first()
@@ -72,6 +104,20 @@ def get_worker_jobs(worker_id: int, db: Session = Depends(get_db)):
         ProductionJob.workers.any(id=worker_id),
         ProductionJob.status.notin_(["completed", "rejected"])
     ).all()
+    return jobs
+
+@router.get("/worker/{worker_id}/history", response_model=List[ProductionJobResponse])
+def get_worker_job_history(worker_id: int, db: Session = Depends(get_db)):
+    worker = db.query(User).filter(User.id == worker_id).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+        
+    jobs = db.query(ProductionJob).options(
+        joinedload(ProductionJob.photos)
+    ).filter(
+        ProductionJob.workers.any(id=worker_id),
+        ProductionJob.status == "completed"
+    ).order_by(ProductionJob.end_time.desc()).all()
     return jobs
 
 @router.patch("/{job_id}/status", response_model=ProductionJobResponse)

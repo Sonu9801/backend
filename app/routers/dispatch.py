@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth import get_current_active_user
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.database import get_db
 from app.models.dispatch import DispatchRecord
 from app.schemas.dispatch import DispatchRecordCreate, DispatchRecordResponse
@@ -9,9 +9,34 @@ from app.services.websocket_manager import manager
 
 router = APIRouter(prefix="/dispatch", tags=["dispatch"], dependencies=[Depends(get_current_active_user)])
 
-@router.get("", response_model=List[DispatchRecordResponse])
-def get_dispatch_records(db: Session = Depends(get_db)):
-    return db.query(DispatchRecord).order_by(DispatchRecord.scheduled_date.desc()).all()
+@router.get("")
+def get_dispatch_records(
+    page: int = 1,
+    page_size: int = 10,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    from sqlalchemy import or_
+    query = db.query(DispatchRecord)
+    if search:
+        query = query.filter(
+            or_(
+                DispatchRecord.vehicle_number.ilike(f"%{search}%"),
+                DispatchRecord.destination.ilike(f"%{search}%"),
+                DispatchRecord.status.ilike(f"%{search}%"),
+            )
+        )
+    total = query.count()
+    total_pages = max(1, -(-total // page_size))
+    offset = (page - 1) * page_size
+    items = query.order_by(DispatchRecord.scheduled_date.desc()).offset(offset).limit(page_size).all()
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 @router.post("", response_model=DispatchRecordResponse, status_code=status.HTTP_201_CREATED)
 async def create_dispatch_record(dispatch_in: DispatchRecordCreate, db: Session = Depends(get_db)):

@@ -6,6 +6,7 @@ class UserBase(BaseModel):
     name: str
 
 class UserCreate(UserBase):
+    password: str
     role: Optional[str] = "operator"
     dealer_name: Optional[str] = None
 
@@ -18,12 +19,13 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class OTPRequest(BaseModel):
-    email: EmailStr
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
-class OTPVerify(BaseModel):
-    email: EmailStr
-    otp_code: str
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
 
 class Token(BaseModel):
     access_token: str

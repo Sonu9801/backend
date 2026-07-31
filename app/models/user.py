@@ -14,9 +14,13 @@ class User(Base):
     preferences = Column(JSON, nullable=True)
     dealer_name = Column(String, nullable=True)
 
-    # OTP Authentication fields
+    # OTP Authentication fields (DEPRECATED — kept for migration compatibility)
     otp_code = Column(String, nullable=True)
     otp_expires_at = Column(DateTime, nullable=True)
+
+    # OAuth fields
+    google_id = Column(String, nullable=True, unique=True, index=True)
+    last_login = Column(DateTime, nullable=True)
 
     # Workforce/Worker Profile Fields (Nullable so admins/operators don't need them)
     employee_id = Column(String, unique=True, index=True, nullable=True)
@@ -27,7 +31,7 @@ class User(Base):
     performance_score = Column(Integer, default=100)
 
     mobile_number = Column(String, nullable=True)
-    password = Column(String, default="1234")  # Fast PIN fallback for PWA kiosk login
+    password = Column(String, nullable=True)  # bcrypt hashed password
     date_of_birth = Column(String, nullable=True)
     gender = Column(String, nullable=True)
     designation = Column(String, nullable=True)

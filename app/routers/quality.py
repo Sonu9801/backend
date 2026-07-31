@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from app.auth import get_current_active_user
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.database import get_db
 from app.models.quality import QCRecord, DefectRecord
 from app.schemas.quality import QCRecordCreate, QCRecordResponse, QCRecordUpdate, DefectRecordCreate, DefectRecordResponse
@@ -12,9 +12,34 @@ from app.config import settings
 
 router = APIRouter(prefix="/quality", tags=["quality"], dependencies=[Depends(get_current_active_user)])
 
-@router.get("", response_model=List[QCRecordResponse])
-def get_qc_records(db: Session = Depends(get_db)):
-    return db.query(QCRecord).order_by(QCRecord.id.desc()).all()
+@router.get("")
+def get_qc_records(
+    page: int = 1,
+    page_size: int = 10,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    from sqlalchemy import or_
+    query = db.query(QCRecord)
+    if search:
+        query = query.filter(
+            or_(
+                QCRecord.vehicle_number.ilike(f"%{search}%"),
+                QCRecord.inspector_name.ilike(f"%{search}%"),
+                QCRecord.status.ilike(f"%{search}%"),
+            )
+        )
+    total = query.count()
+    total_pages = max(1, -(-total // page_size))
+    offset = (page - 1) * page_size
+    items = query.order_by(QCRecord.id.desc()).offset(offset).limit(page_size).all()
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 @router.post("", response_model=QCRecordResponse, status_code=status.HTTP_201_CREATED)
 async def create_qc_record(qc_in: QCRecordCreate, db: Session = Depends(get_db)):

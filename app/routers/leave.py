@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from app.database import get_db
-from app.routers.auth import get_current_active_user
+from app.auth import get_current_active_user
 from app.models.leave import LeaveRequest
 from app.models.user import User
 

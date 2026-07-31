@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, R
 from app.auth import get_current_active_user
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 from app.database import get_db
 from app.models.user import User
@@ -250,19 +251,48 @@ def get_attendance(db: Session = Depends(get_db)):
 
 @router.get("/logs/detailed")
 def get_detailed_logs(
+    page: int = 1,
+    page_size: int = 10,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    department: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     user = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    query = db.query(Attendance).order_by(Attendance.date.desc())
+    from sqlalchemy import or_, and_
+    from datetime import date as date_type
+    query = db.query(Attendance).join(User, Attendance.worker_id == User.id)
     if user.role == "supervisor":
-        query = query.join(User).filter(User.department == user.department)
-        
-    records = query.all()
+        query = query.filter(User.department == user.department)
+
+    if search:
+        query = query.filter(
+            or_(
+                User.name.ilike(f"%{search}%"),
+                User.employee_id.ilike(f"%{search}%"),
+                User.department.ilike(f"%{search}%"),
+            )
+        )
+    if status and status != "All":
+        query = query.filter(Attendance.status == status)
+    if department and department != "All":
+        query = query.filter(User.department == department)
+    if date_from:
+        query = query.filter(Attendance.date >= date_from)
+    if date_to:
+        query = query.filter(Attendance.date <= date_to)
+
+    total = query.count()
+    total_pages = max(1, -(-total // page_size))
+    offset = (page - 1) * page_size
+    records = query.order_by(Attendance.date.desc()).offset(offset).limit(page_size).all()
+
     results = []
     for r in records:
         worker = r.worker
         if worker:
-            # fetch the last punch in and punch out logs for this record to get photo/GPS
             in_log = db.query(AttendanceLog).filter(AttendanceLog.worker_id == worker.id, AttendanceLog.action == "Punch In", AttendanceLog.timestamp >= r.punch_in).first() if r.punch_in else None
             out_log = db.query(AttendanceLog).filter(AttendanceLog.worker_id == worker.id, AttendanceLog.action == "Punch Out", AttendanceLog.timestamp >= r.punch_out).first() if r.punch_out else None
 
@@ -289,7 +319,15 @@ def get_detailed_logs(
                 "latitude": in_log.latitude if in_log else (out_log.latitude if out_log else None),
                 "longitude": in_log.longitude if in_log else (out_log.longitude if out_log else None),
             })
-    return results
+
+    return {
+        "items": results,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
 
 @router.get("/exceptions")
 def get_exceptions(db: Session = Depends(get_db)):

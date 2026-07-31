@@ -10,12 +10,38 @@ from app.services.websocket_manager import manager
 
 router = APIRouter(prefix="/vehicles", tags=["vehicles"], dependencies=[Depends(get_current_active_user)])
 
-@router.get("", response_model=List[VehicleResponse])
-def get_vehicles(db: Session = Depends(get_db), current_user = Depends(get_current_active_user)):
+@router.get("")
+def get_vehicles(
+    page: int = 1,
+    page_size: int = 10,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    from sqlalchemy import or_
     query = db.query(Vehicle)
     if current_user.role == "oem" and current_user.dealer_name:
         query = query.filter(Vehicle.oem_name.ilike(f"%{current_user.dealer_name}%"))
-    return query.order_by(Vehicle.id).all()
+    if search:
+        query = query.filter(
+            or_(
+                Vehicle.vehicle_number.ilike(f"%{search}%"),
+                Vehicle.oem_name.ilike(f"%{search}%"),
+                Vehicle.stage.ilike(f"%{search}%"),
+            )
+        )
+    total = query.count()
+    total_pages = max(1, -(-total // page_size))
+    offset = (page - 1) * page_size
+    items = query.order_by(Vehicle.id).offset(offset).limit(page_size).all()
+    return {
+        "items": [VehicleResponse.model_validate(v).model_dump() for v in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
 
 @router.get("/{vehicle_id}", response_model=VehicleResponse)
 def get_vehicle(vehicle_id: int, db: Session = Depends(get_db)):

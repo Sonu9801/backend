@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime
 from app.database import get_db
-from app.routers.auth import get_current_active_user
+from app.auth import get_current_active_user
 from app.models.user import User
 from app.models.attendance import Attendance
 from app.models.leave import LeaveRequest

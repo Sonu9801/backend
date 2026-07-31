@@ -4,7 +4,7 @@ import random
 from datetime import datetime, timedelta
 
 from app.database import SessionLocal
-from app.models.worker import Worker
+from app.models.user import User
 from app.models.salary_profile import SalaryProfile
 from app.models.attendance import Attendance
 from app.models.payroll import AdvanceRequest
@@ -12,7 +12,7 @@ from app.models.payroll import AdvanceRequest
 def seed():
     db = SessionLocal()
     
-    existing = db.query(Worker).count()
+    existing = db.query(User).filter(User.employee_id.isnot(None)).count()
         
     depts = ["Fabrication", "Paint", "Dispatch", "Quality", "Assembly"]
     roles = ["Operator", "Technician", "Supervisor", "Helper", "Inspector"]
@@ -25,20 +25,22 @@ def seed():
     if existing < 15:
         print("Generating Workers...")
         for i in range(existing + 1, 16):
-            w = Worker(
+            w = User(
+                email=f"employee{i}@foxflow.com",
                 employee_id=f"EMP-2026-{i:03d}",
                 name=f"Demo Employee {i}",
                 mobile_number=f"9876543{i:03d}",
                 password="1234",
                 department=random.choice(depts),
-                role=random.choice(roles),
+                role="worker",
+                is_active=True,
                 employment_status="Active"
             )
             db.add(w)
             workers.append(w)
         db.commit()
     
-    workers = db.query(Worker).all()
+    workers = db.query(User).filter(User.employee_id.isnot(None)).all()
 
     print("Generating Salary Profiles...")
     for w in workers:

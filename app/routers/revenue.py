@@ -15,7 +15,7 @@ from app.models.activity import ActivityEvent
 from app.models.notification import Notification
 from app.schemas.sales_invoice import SalesInvoiceCreate, SalesInvoiceUpdate, SalesInvoiceResponse, SalesInvoiceBase
 from app.services.ocr import extract_invoice_data
-from app.routers.auth import get_current_user
+from app.auth import get_current_user
 from app.services.websocket_manager import manager
 from app.services.duplicate_detection import DuplicateDetectionService
 import asyncio
@@ -153,10 +153,10 @@ async def create_sales_invoice(
         print(f"500 ERROR IN CREATE: {error_trace}")
         raise HTTPException(status_code=400, detail=f"DEBUG ERROR: {str(e)}")
 
-@router.get("", response_model=List[SalesInvoiceResponse])
+@router.get("")
 def get_sales_invoices(
-    skip: int = 0,
-    limit: int = 50,
+    page: int = 1,
+    page_size: int = 10,
     search: Optional[str] = None,
     approval_status: Optional[str] = None,
     payment_status: Optional[str] = None,
@@ -169,7 +169,7 @@ def get_sales_invoices(
     current_user: User = Depends(get_current_user)
 ):
     query = db.query(SalesInvoice)
-    
+
     if search:
         query = query.filter(
             or_(
@@ -180,7 +180,7 @@ def get_sales_invoices(
                 SalesInvoice.po_number.ilike(f"%{search}%"),
             )
         )
-        
+
     if approval_status:
         query = query.filter(SalesInvoice.approval_status == approval_status)
     if payment_status:
@@ -195,8 +195,20 @@ def get_sales_invoices(
         query = query.filter(func.date(SalesInvoice.invoice_date) >= start_date)
     if end_date:
         query = query.filter(func.date(SalesInvoice.invoice_date) <= end_date)
-        
-    return query.order_by(desc(SalesInvoice.created_at)).offset(skip).limit(limit).all()
+
+    total = query.count()
+    total_pages = max(1, -(-total // page_size))
+    offset = (page - 1) * page_size
+    items = query.order_by(desc(SalesInvoice.created_at)).offset(offset).limit(page_size).all()
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
 
 @router.get("/dashboard-stats")
 def get_dashboard_stats(

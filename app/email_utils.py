@@ -57,6 +57,8 @@ def send_invite_email(to_email: str, user_name: str, role: str):
     msg["From"] = f"FoxFlow <{settings.SMTP_FROM}>"
     msg["To"] = to_email
 
+    invite_url = f"{settings.FRONTEND_URL}/login?email={to_email}&invite=true"
+
     html_body = f"""
     <html>
     <body style="font-family: 'Segoe UI', Arial, sans-serif; background-color: #0a0a0f; color: #e4e4e7; padding: 40px 0;">
@@ -65,13 +67,22 @@ def send_invite_email(to_email: str, user_name: str, role: str):
           <h1 style="margin: 0; font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">FOXFLOW</h1>
           <p style="margin: 8px 0 0; font-size: 14px; color: rgba(255,255,255,0.8);">Manufacturing Command Center</p>
         </div>
-        <div style="padding: 32px;">
+        <div style="padding: 32px; text-align: left;">
           <p style="font-size: 16px; color: #a1a1aa; margin: 0 0 8px;">Hello <strong style="color: #e4e4e7;">{user_name}</strong>,</p>
           <p style="font-size: 14px; color: #a1a1aa; margin: 0 0 24px; line-height: 1.6;">
             You have been invited to join FoxFlow as a <strong>{role.capitalize()}</strong>.
           </p>
           <p style="font-size: 14px; color: #a1a1aa; margin: 0 0 24px; line-height: 1.6;">
-            You can log in to the portal using this email address. Your login will be authenticated using a One-Time Password (OTP) sent to this email.
+            Please click the button below to set up your password and complete your registration:
+          </p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="{invite_url}" style="background-color: #7c3aed; color: #ffffff; padding: 12px 28px; text-decoration: none; font-weight: 600; border-radius: 8px; font-size: 14px; display: inline-block; box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);">
+              Complete Setup
+            </a>
+          </div>
+          <p style="font-size: 12px; color: #71717a; line-height: 1.5; margin: 24px 0 0;">
+            If the button doesn't work, copy and paste this link in your browser:<br/>
+            <a href="{invite_url}" style="color: #a78bfa; text-decoration: underline;">{invite_url}</a>
           </p>
         </div>
         <div style="padding: 16px 32px; border-top: 1px solid #27272a; text-align: center;">
@@ -82,7 +93,7 @@ def send_invite_email(to_email: str, user_name: str, role: str):
     </html>
     """
 
-    text_body = f"Hello {user_name},\n\nYou have been invited to join FoxFlow as a {role.capitalize()}.\n\nYou can log in using this email address via OTP."
+    text_body = f"Hello {user_name},\n\nYou have been invited to join FoxFlow as a {role.capitalize()}.\n\nPlease visit this link to set your password and complete your registration:\n{invite_url}"
 
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))

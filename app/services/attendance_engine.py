@@ -101,15 +101,21 @@ class TimeEngine:
 class PayrollSyncEngine:
     @staticmethod
     def sync_daily_attendance(db: Session, attendance: Attendance, salary_profile: SalaryProfile):
-        if not salary_profile:
-            return
-            
-        # Example sync: Update a PayrollRecord or similar
-        # Since Payroll module is assumed to process monthly, we can just aggregate or create a daily record
         from app.models.payroll import PayrollRecord
-        
-        # Check if monthly record exists for this worker
-        month_str = attendance.date.strftime("%Y-%m")
+        import calendar
+
+        month_str = attendance.date.strftime("%Y-%m") if hasattr(attendance.date, 'strftime') else str(attendance.date)[:7]
+        try:
+            year_num, month_num = map(int, month_str.split("-"))
+            _, days_in_month = calendar.monthrange(year_num, month_num)
+        except:
+            days_in_month = 30
+
+        base_monthly = (salary_profile.monthly_salary if (salary_profile and salary_profile.monthly_salary) else 20000.0)
+        daily_rate = base_monthly / days_in_month
+        hourly_rate = daily_rate / 8.0
+        sunday_hourly_rate = hourly_rate * 2.0
+
         payroll_record = db.query(PayrollRecord).filter(
             PayrollRecord.worker_id == attendance.worker_id,
             PayrollRecord.month == month_str
@@ -119,7 +125,7 @@ class PayrollSyncEngine:
             payroll_record = PayrollRecord(
                 worker_id=attendance.worker_id,
                 month=month_str,
-                base_salary=salary_profile.monthly_salary or 0,
+                base_salary=base_monthly,
                 status="draft"
             )
             db.add(payroll_record)
@@ -131,7 +137,8 @@ class PayrollSyncEngine:
         
         present = 0; absent = 0; half = 0; late = 0;
         leave = 0; sunday = 0; holiday = 0
-        total_ot = 0.0; total_hours = 0.0
+        total_ot = 0.0; total_hours = 0.0; sunday_hours = 0.0
+        total_regular_earned = 0.0; total_ot_earned = 0.0; total_sunday_earned = 0.0
         
         for att in all_month_attendances:
             s = (att.status or "").lower()
@@ -141,10 +148,30 @@ class PayrollSyncEngine:
             elif s == "leave" or s == "paid leave": leave += 1
             
             if att.late_minutes and att.late_minutes > 0: late += 1
-            if att.is_sunday: sunday += 1
             
-            total_ot += (att.ot_hours or 0.0)
-            total_hours += (att.net_working_hours or 0.0)
+            # Check Sunday
+            is_sun = False
+            try:
+                dt = att.date if not isinstance(att.date, str) else datetime.strptime(att.date, "%Y-%m-%d").date()
+                if dt.weekday() == 6:
+                    is_sun = True
+            except:
+                is_sun = bool(att.is_sunday)
+                
+            worked_hrs = att.net_working_hours or 0.0
+            ot_hrs = att.ot_hours or 0.0
+            regular_hrs = max(0.0, worked_hrs - ot_hrs)
+            
+            total_hours += worked_hrs
+            total_ot += ot_hrs
+
+            if is_sun and (s in ["present", "half day"] or worked_hrs > 0):
+                sunday += 1
+                sunday_hours += worked_hrs
+                total_sunday_earned += worked_hrs * sunday_hourly_rate
+            else:
+                total_regular_earned += regular_hrs * hourly_rate
+                total_ot_earned += ot_hrs * hourly_rate
             
         payroll_record.days_present = present
         payroll_record.days_absent = absent
@@ -157,11 +184,9 @@ class PayrollSyncEngine:
         payroll_record.ot_hours = total_ot
         payroll_record.net_working_days = present + (half * 0.5) + leave
         
-        daily_rate = (payroll_record.base_salary / 30) if payroll_record.base_salary else (salary_profile.daily_wage or 0.0)
-        earned = (payroll_record.net_working_days or 0.0) * daily_rate
-        ot_earned = total_ot * (salary_profile.ot_rate_per_hour or 0.0)
-        
-        payroll_record.ot_amount = ot_earned
-        payroll_record.final_salary = earned + ot_earned - (payroll_record.deductions or 0.0)
+        payroll_record.base_salary = base_monthly
+        payroll_record.ot_amount = total_ot_earned
+        payroll_record.sunday_amount = total_sunday_earned
+        payroll_record.final_salary = total_regular_earned + total_ot_earned + total_sunday_earned + (payroll_record.bonus_amount or 0.0) - (payroll_record.deductions or 0.0)
         
         db.commit()

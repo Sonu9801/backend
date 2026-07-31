@@ -72,3 +72,13 @@ def get_worker_components(worker_id: int, db: Session = Depends(get_db)):
 @router.get("", response_model=List[ComponentTaskResponse])
 def get_all_components(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
     return db.query(ComponentTask).order_by(ComponentTask.id.desc()).all()
+
+@router.delete("/{task_id}")
+def delete_component_task(task_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    task = db.query(ComponentTask).filter(ComponentTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    db.delete(task)
+    db.commit()
+    return {"message": "Task deleted successfully"}

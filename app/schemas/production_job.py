@@ -2,6 +2,18 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
+class ProductionJobPhoto(BaseModel):
+    id: int
+    photo_url: str
+    photo_type: str
+    timestamp: Optional[datetime] = None
+    gps_lat: Optional[float] = None
+    gps_lng: Optional[float] = None
+    remarks: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
 class ProductionJobBase(BaseModel):
     vehicle_id: int
     stage: str
@@ -23,6 +35,7 @@ class ProductionJobResponse(ProductionJobBase):
     end_time: Optional[datetime] = None
     photo_proof_url: Optional[str] = None
     comments: Optional[str] = None
+    photos: List[ProductionJobPhoto] = []
 
     class Config:
         from_attributes = True
