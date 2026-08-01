@@ -6,13 +6,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine, Base, init_db
 from app.routers import auth, users, workers, worker, vehicles, quality, dispatch, activities, websocket, attendance, payroll, oem_schedule, attendance_settings, factory_settings, notifications, jobs, invoices, revenue, leave, documents, team, components, performance
 from app.models.component_task import ComponentTask
 from app.models.performance import WorkerDailyPerformance, TeamDailySummary
-
-# Create database tables if they do not exist
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="FOXFLOW ERP API",
@@ -104,6 +101,8 @@ async def periodic_session_cleanup():
 
 @app.on_event("startup")
 async def startup_event():
+    # Initialize database tables with connection retries
+    init_db()
     # Start the background task to delete old attendance photos (older than 60 days)
     asyncio.create_task(cleanup_old_attendance_photos())
     # Start periodic session/cache cleanup
