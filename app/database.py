@@ -13,7 +13,7 @@ if settings.DATABASE_URL.startswith("sqlite"):
 else:
     engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 Base = declarative_base()
 
 def init_db(retries: int = 15, delay: int = 2):
