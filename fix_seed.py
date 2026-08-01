@@ -48,3 +48,6 @@ for i, line in enumerate(lines):
 
 with open('seed.py', 'w') as f:
     f.writelines(new_lines)
+
+    # python fix_seed.py
+    # 
