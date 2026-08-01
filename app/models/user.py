@@ -19,7 +19,6 @@ class User(Base):
     otp_expires_at = Column(DateTime, nullable=True)
 
     # OAuth fields
-    google_id = Column(String, nullable=True, unique=True, index=True)
     last_login = Column(DateTime, nullable=True)
 
     # Workforce/Worker Profile Fields (Nullable so admins/operators don't need them)

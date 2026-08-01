@@ -436,62 +436,6 @@ def change_password(
     return {"message": "Password changed successfully"}
 
 
-# ─── GET /auth/google ─────────────────────────────────────────────────────────
-
-@router.get("/google")
-async def google_login(request: Request):
-    """Redirect to Google OAuth consent screen."""
-    if not settings.GOOGLE_CLIENT_ID:
-        raise HTTPException(
-            status_code=501,
-            detail="Google OAuth is not configured",
-        )
-    from app.oauth import oauth
-    redirect_uri = settings.GOOGLE_REDIRECT_URI or str(
-        request.url_for("google_callback")
-    )
-    return await oauth.google.authorize_redirect(request, redirect_uri)
-
-
-@router.get("/google/callback")
-async def google_callback(request: Request, response: Response, db: Session = Depends(get_db)):
-    """Handle Google OAuth callback — creates/links user, sets session + cookies."""
-    if not settings.GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=501, detail="Google OAuth is not configured")
-
-    from app.oauth import oauth, get_or_create_user_from_google
-
-    try:
-        token = await oauth.google.authorize_access_token(request)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"OAuth error: {str(e)}")
-
-    google_user = token.get("userinfo")
-    if not google_user:
-        google_user = await oauth.google.userinfo(token=token)
-
-    user = get_or_create_user_from_google(db, dict(google_user))
-    if not user:
-        redirect = RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invite_only", status_code=302)
-        return redirect
-
-    user.last_login = datetime.utcnow()
-    db.commit()
-
-    # Build session + tokens
-    session_id = session_store.create_session(
-        user_id=user.id,
-        role=user.role,
-        ttl_days=settings.SESSION_EXPIRE_DAYS,
-    )
-    token_data = {"sub": user.email, "role": user.role}
-    access_token = create_access_token(data=token_data, session_id=session_id)
-    refresh_token = create_refresh_token(data=token_data, session_id=session_id)
-
-    # Redirect to frontend with cookies set
-    redirect = RedirectResponse(url=settings.FRONTEND_URL, status_code=302)
-    set_auth_cookies(redirect, access_token, refresh_token)
-    return redirect
 
 
 # ─── POST /auth/device ────────────────────────────────────────────────────────
