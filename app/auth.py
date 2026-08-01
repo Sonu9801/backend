@@ -169,41 +169,18 @@ async def get_current_user(
         if session is None:
             raise credentials_exception
 
-    # Resolve user — check cache first
-    is_from_cache = False
+    # Resolve user directly from DB to avoid SQLAlchemy session lifecycle bugs
     if token_data.username.startswith("worker:"):
         worker_id = int(token_data.username.split(":")[1])
-        cache_key = f"user:{worker_id}"
-        user = user_cache.get(cache_key)
-        if user is None:
-            user = db.query(User).filter(User.id == worker_id).first()
-            if user:
-                user_cache.set(cache_key, user)
-        else:
-            is_from_cache = True
+        user = db.query(User).filter(User.id == worker_id).first()
         if user:
             # Dynamically attach role for RoleChecker
             user.role = token_data.role
     else:
-        cache_key = f"email:{token_data.username}"
-        user = user_cache.get(cache_key)
-        if user is None:
-            user = db.query(User).filter(User.email == token_data.username).first()
-            if user:
-                user_cache.set(cache_key, user)
-        else:
-            is_from_cache = True
+        user = db.query(User).filter(User.email == token_data.username).first()
 
     if user is None:
         raise credentials_exception
-
-    # Re-associate cached user with current DB session to prevent DetachedInstanceError
-    if is_from_cache and user not in db:
-        existing = db.identity_map.get((User, (user.id,)))
-        if existing is not None:
-            user = existing
-        else:
-            db.add(user)
 
     return user
 
