@@ -77,11 +77,25 @@ def set_auth_cookies(
     response: Response,
     access_token: str,
     refresh_token: str,
+    request: Optional[Request] = None,
 ) -> None:
-    """Set HttpOnly secure cookies for both tokens."""
+    """Set HttpOnly secure cookies for both tokens. Dynamically detects HTTPS proxy tunnels."""
+    is_secure = settings.COOKIE_SECURE
+    if request:
+        proto = request.headers.get("x-forwarded-proto", "").lower()
+        referer = request.headers.get("referer", "").lower()
+        origin = request.headers.get("origin", "").lower()
+        if (
+            request.url.scheme == "https"
+            or proto == "https"
+            or referer.startswith("https://")
+            or origin.startswith("https://")
+        ):
+            is_secure = True
+
     cookie_kwargs = {
         "httponly": True,
-        "secure": settings.COOKIE_SECURE,
+        "secure": is_secure,
         "samesite": settings.COOKIE_SAMESITE,
         "path": "/",
     }

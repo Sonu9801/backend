@@ -56,7 +56,7 @@ class DeviceRegistrationRequest(BaseModel):
 
 # ─── Helper: Build login response ────────────────────────────────────────────
 
-def _build_login_response(user: User, response: Response, is_worker: bool = False):
+def _build_login_response(user: User, response: Response, request: Optional[Request] = None, is_worker: bool = False):
     """
     Shared logic for login and worker-login:
       1. Create server-side session
@@ -81,7 +81,7 @@ def _build_login_response(user: User, response: Response, is_worker: bool = Fals
     refresh_token = create_refresh_token(data=token_data, session_id=session_id)
 
     # Set cookies
-    set_auth_cookies(response, access_token, refresh_token)
+    set_auth_cookies(response, access_token, refresh_token, request=request)
 
     # Update last_login (fire-and-forget, don't block on this)
     # We'll handle the DB update in the endpoint itself
@@ -196,7 +196,7 @@ def login(
 
     record_login(user.id, request, db)
 
-    return _build_login_response(user, response)
+    return _build_login_response(user, response, request=request)
 
 
 # ─── GET /auth/setup-status ──────────────────────────────────────────────────
@@ -312,7 +312,7 @@ def worker_login(
 
     record_login(worker.id, request, db)
 
-    return _build_login_response(worker, response, is_worker=True)
+    return _build_login_response(worker, response, request=request, is_worker=True)
 
 
 # ─── POST /auth/refresh ──────────────────────────────────────────────────────
@@ -382,9 +382,21 @@ def refresh_access_token(
     )
 
     # Update the access_token cookie
+    is_secure = settings.COOKIE_SECURE
+    proto = request.headers.get("x-forwarded-proto", "").lower()
+    referer = request.headers.get("referer", "").lower()
+    origin = request.headers.get("origin", "").lower()
+    if (
+        request.url.scheme == "https"
+        or proto == "https"
+        or referer.startswith("https://")
+        or origin.startswith("https://")
+    ):
+        is_secure = True
+
     cookie_kwargs = {
         "httponly": True,
-        "secure": settings.COOKIE_SECURE,
+        "secure": is_secure,
         "samesite": settings.COOKIE_SAMESITE,
         "path": "/",
     }
