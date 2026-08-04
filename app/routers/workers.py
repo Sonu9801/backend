@@ -67,7 +67,9 @@ def get_workers(
 
     results = []
     for w in workers:
-        w_dict = WorkerResponse.model_validate(w).model_dump()
+        w_dict = WorkerResponse.model_validate(w).model_dump(by_alias=True)
+        w_dict["employee_id"] = w.employee_id
+        w_dict["mobile_number"] = w.mobile_number
         att = att_map.get(w.id)
         if att:
             w_dict["attendance"] = [{

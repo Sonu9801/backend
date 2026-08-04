@@ -6,7 +6,7 @@ class UserBase(BaseModel):
     name: str
 
 class UserCreate(UserBase):
-    password: str
+    password: Optional[str] = None
     role: Optional[str] = "operator"
     dealer_name: Optional[str] = None
 

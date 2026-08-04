@@ -17,8 +17,7 @@ def get_users(
     db: Session = Depends(get_db)
 ):
     from sqlalchemy import or_
-    # Returns only managers/supervisors/admins, exclude workers
-    query = db.query(User).filter(User.role != "worker")
+    query = db.query(User).filter(User.role.notilike("worker"))
     if search:
         query = query.filter(
             or_(
@@ -40,7 +39,17 @@ def get_users(
     }
 
 @router.post("/invite", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def invite_user(user_in: UserCreate, db: Session = Depends(get_db)):
+def invite_user(
+    user_in: UserCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can invite new members."
+        )
+
     db_user = db.query(User).filter(User.email == user_in.email).first()
     if db_user:
         raise HTTPException(
@@ -73,7 +82,17 @@ def invite_user(user_in: UserCreate, db: Session = Depends(get_db)):
     return user
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_user(user_id: int, db: Session = Depends(get_db)):
+def remove_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can remove members."
+        )
+
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
         raise HTTPException(

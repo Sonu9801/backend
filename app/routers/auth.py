@@ -109,11 +109,53 @@ def _build_login_response(user: User, response: Response, is_worker: bool = Fals
     }
 
 
+from app.models.user_login_history import UserLoginHistory
+
+def record_login(user_id: int, request: Request, db: Session):
+    try:
+        user_agent = request.headers.get("user-agent", "")
+        device = "Web Browser"
+        if "Windows" in user_agent:
+            if "Chrome" in user_agent:
+                device = "Chrome on Windows"
+            elif "Firefox" in user_agent:
+                device = "Firefox on Windows"
+            else:
+                device = "Windows Device"
+        elif "iPhone" in user_agent or "iPad" in user_agent:
+            if "Safari" in user_agent and "Chrome" not in user_agent:
+                device = "Safari on iPhone"
+            else:
+                device = "iOS Device"
+        elif "Android" in user_agent:
+            device = "Android Device"
+        elif "Macintosh" in user_agent:
+            if "Safari" in user_agent and "Chrome" not in user_agent:
+                device = "Safari on Mac"
+            else:
+                device = "Chrome on Mac"
+
+        ip = request.client.host if request.client else "127.0.0.1"
+        location = "Mumbai, India"
+
+        history = UserLoginHistory(
+            user_id=user_id,
+            device=device,
+            ip_address=ip,
+            location=location,
+            login_time=datetime.utcnow()
+        )
+        db.add(history)
+        db.commit()
+    except Exception as e:
+        print(f"Failed to record login history: {e}")
+
 # ─── POST /auth/login ────────────────────────────────────────────────────────
 
 @router.post("/login")
 def login(
     response: Response,
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -152,6 +194,8 @@ def login(
     user.last_login = datetime.utcnow()
     db.commit()
 
+    record_login(user.id, request, db)
+
     return _build_login_response(user, response)
 
 
@@ -173,6 +217,11 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     - If 0 users in database, allow setup and force role to "admin".
     - If >0 users in database, only allow registration if user exists with password IS NULL (invite).
     """
+    if not user_in.password or not user_in.password.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password is required for registration",
+        )
     user_count = db.query(User).count()
     
     if user_count == 0:
@@ -227,6 +276,7 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
 @router.post("/worker-login")
 def worker_login(
     response: Response,
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -259,6 +309,8 @@ def worker_login(
 
     worker.last_login = datetime.utcnow()
     db.commit()
+
+    record_login(worker.id, request, db)
 
     return _build_login_response(worker, response, is_worker=True)
 
@@ -472,3 +524,24 @@ def register_device(
 def get_me(current_user: User = Depends(get_current_active_user)):
     """Get the current authenticated user's profile."""
     return current_user
+
+
+@router.get("/login-history")
+def get_login_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Retrieve recent login activity for the authenticated user."""
+    history = db.query(UserLoginHistory).filter(
+        UserLoginHistory.user_id == current_user.id
+    ).order_by(UserLoginHistory.login_time.desc()).limit(10).all()
+    
+    return [
+        {
+            "device": h.device,
+            "ip": h.ip_address,
+            "location": h.location,
+            "time": h.login_time.isoformat() + "Z"
+        }
+        for h in history
+    ]

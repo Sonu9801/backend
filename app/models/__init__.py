@@ -21,6 +21,7 @@ from app.models.invoice_audit import InvoiceAudit
 from app.models.job_photo import JobPhoto
 from app.models.sales_invoice import SalesInvoice
 from app.models.sales_invoice_audit import SalesInvoiceAudit
+from app.models.user_login_history import UserLoginHistory
 
 __all__ = [
     "Base",
@@ -48,4 +49,5 @@ __all__ = [
     "JobPhoto",
     "SalesInvoice",
     "SalesInvoiceAudit",
+    "UserLoginHistory",
 ]

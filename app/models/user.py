@@ -67,3 +67,4 @@ class User(Base):
         secondary=job_user_association,
         back_populates="workers"
     )
+    login_history = relationship("UserLoginHistory", back_populates="user", cascade="all, delete-orphan")

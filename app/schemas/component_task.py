@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 from app.schemas.user import UserResponse
 
 class ComponentTaskBase(BaseModel):
@@ -22,6 +22,14 @@ class ComponentTaskResponse(ComponentTaskBase):
     photo_proof_url: Optional[str]
     notes: Optional[str]
     workers: List[UserResponse] = []
+
+    @field_serializer('start_time', 'end_time')
+    def serialize_datetime(self, dt: Optional[datetime], _info):
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
 
     class Config:
         from_attributes = True

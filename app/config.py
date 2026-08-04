@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30    # Long-lived refresh token
     SESSION_EXPIRE_DAYS: int = 30          # Server-side session TTL
     UPLOAD_DIR: str = "uploads"
+    REDIS_URL: str = "redis://redis:6379/0"  # Redis for persistent sessions
 
     # Cookie settings
     COOKIE_DOMAIN: str = ""        # Empty = current domain

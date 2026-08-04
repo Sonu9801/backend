@@ -159,6 +159,10 @@ def get_invoices(
     vendor: Optional[str] = None,
     department: Optional[str] = None,
     category: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -184,6 +188,24 @@ def get_invoices(
         query = query.filter(Invoice.department == department)
     if category:
         query = query.filter(Invoice.expense_category == category)
+
+    from sqlalchemy.sql.functions import coalesce
+    s_date_str = start_date or date_from
+    e_date_str = end_date or date_to
+
+    if s_date_str:
+        try:
+            s_date = datetime.strptime(s_date_str, "%Y-%m-%d").date()
+            query = query.filter(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)) >= s_date)
+        except ValueError:
+            pass
+
+    if e_date_str:
+        try:
+            e_date = datetime.strptime(e_date_str, "%Y-%m-%d").date()
+            query = query.filter(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)) <= e_date)
+        except ValueError:
+            pass
 
     total = query.count()
     total_pages = max(1, -(-total // page_size))

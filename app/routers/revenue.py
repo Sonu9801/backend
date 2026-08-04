@@ -165,6 +165,8 @@ def get_sales_invoices(
     work_type: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -191,10 +193,13 @@ def get_sales_invoices(
         query = query.filter(SalesInvoice.oem == oem)
     if work_type:
         query = query.filter(SalesInvoice.work_type == work_type)
-    if start_date:
-        query = query.filter(func.date(SalesInvoice.invoice_date) >= start_date)
-    if end_date:
-        query = query.filter(func.date(SalesInvoice.invoice_date) <= end_date)
+    from sqlalchemy.sql.functions import coalesce
+    s_date = start_date or date_from
+    e_date = end_date or date_to
+    if s_date:
+        query = query.filter(coalesce(SalesInvoice.invoice_date, func.date(SalesInvoice.created_at)) >= s_date)
+    if e_date:
+        query = query.filter(coalesce(SalesInvoice.invoice_date, func.date(SalesInvoice.created_at)) <= e_date)
 
     total = query.count()
     total_pages = max(1, -(-total // page_size))
