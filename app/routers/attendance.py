@@ -54,9 +54,10 @@ async def punch_attendance(
         )
         db.add(notification)
         # Create an exception record
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
         exc = AttendanceException(
             worker_id=worker.id,
-            date=datetime.now(timezone.utc).date(),
+            date=datetime.now(ist_offset).date(),
             exception_type="Outside Geofence",
             notes=geo_msg
         )
@@ -73,7 +74,8 @@ async def punch_attendance(
             shutil.copyfileobj(photo.file, buffer)
         photo_url = f"/uploads/attendance_photos/{filename}"
 
-    now = datetime.now(timezone.utc)
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist_offset)
     today = now.date()
 
     # Prevent duplicate punches (if already punched in/out in the last 1 minute)
@@ -82,8 +84,10 @@ async def punch_attendance(
         AttendanceLog.action == action
     ).order_by(AttendanceLog.timestamp.desc()).first()
 
-    if last_log and last_log.timestamp and (now - last_log.timestamp.replace(tzinfo=timezone.utc)).total_seconds() < 60:
-        raise HTTPException(status_code=400, detail="Duplicate punch detected. Please try again later.")
+    if last_log and last_log.timestamp:
+        last_log_ts = last_log.timestamp.replace(tzinfo=ist_offset) if last_log.timestamp.tzinfo is None else last_log.timestamp.astimezone(ist_offset)
+        if (now - last_log_ts).total_seconds() < 60:
+            raise HTTPException(status_code=400, detail="Duplicate punch detected. Please try again later.")
 
     log = AttendanceLog(
         worker_id=worker.id,
@@ -149,7 +153,8 @@ async def punch_attendance(
 
 @router.get("/worker/{worker_id}/summary")
 def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
-    today = datetime.now(timezone.utc).date()
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    today = datetime.now(ist_offset).date()
     record = db.query(Attendance).filter(
         Attendance.worker_id == worker_id, 
         Attendance.date == today
@@ -178,7 +183,8 @@ def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
 
 @router.get("/worker/{worker_id}/history")
 def get_worker_history(worker_id: int, db: Session = Depends(get_db)):
-    thirty_days_ago = datetime.now(timezone.utc).date() - timedelta(days=30)
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    thirty_days_ago = datetime.now(ist_offset).date() - timedelta(days=30)
     records = db.query(Attendance).filter(
         Attendance.worker_id == worker_id,
         Attendance.date >= thirty_days_ago
@@ -201,7 +207,8 @@ def get_worker_history(worker_id: int, db: Session = Depends(get_db)):
 @router.get("/worker/{worker_id}/monthly-summary")
 def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = Depends(get_db)):
     # month format: YYYY-MM
-    target_date = datetime.strptime(month, "%Y-%m").date() if month else datetime.now(timezone.utc).date()
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    target_date = datetime.strptime(month, "%Y-%m").date() if month else datetime.now(ist_offset).date()
     
     import calendar
     _, last_day = calendar.monthrange(target_date.year, target_date.month)
@@ -368,11 +375,13 @@ async def approve_exception(id: int, payload: ApproveExceptionPayload, db: Sessi
         if exc.exception_type == "Forgot Punch In":
             # For simplicity, we just set a default punch in
             from datetime import time
-            att.punch_in = datetime.combine(exc.date, time(9, 0)).replace(tzinfo=timezone.utc)
+            ist_offset = timezone(timedelta(hours=5, minutes=30))
+            att.punch_in = datetime.combine(exc.date, time(9, 0)).replace(tzinfo=ist_offset)
             att.status = "Present"
         elif exc.exception_type == "Forgot Punch Out":
             from datetime import time
-            att.punch_out = datetime.combine(exc.date, time(18, 0)).replace(tzinfo=timezone.utc)
+            ist_offset = timezone(timedelta(hours=5, minutes=30))
+            att.punch_out = datetime.combine(exc.date, time(18, 0)).replace(tzinfo=ist_offset)
             att.net_working_hours = 9.0
             
         db.commit()
@@ -484,7 +493,8 @@ def get_analytics(
     user = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    now = datetime.now(timezone.utc)
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist_offset)
     today = now.date()
     
     query_workers = db.query(User).filter(User.employee_id.isnot(None))

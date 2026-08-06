@@ -38,10 +38,10 @@ class TimeEngine:
     def calculate_status(settings: AttendanceSettings, punch_in: datetime, punch_out: datetime = None) -> dict:
         # Convert UTC punch times to Indian Standard Time (IST) to match shift settings
         ist_offset = timezone(timedelta(hours=5, minutes=30))
-        punch_in_local = punch_in.astimezone(ist_offset) if punch_in.tzinfo else punch_in.replace(tzinfo=timezone.utc).astimezone(ist_offset)
+        punch_in_local = punch_in.astimezone(ist_offset) if punch_in.tzinfo else punch_in.replace(tzinfo=ist_offset)
         punch_out_local = None
         if punch_out:
-            punch_out_local = punch_out.astimezone(ist_offset) if punch_out.tzinfo else punch_out.replace(tzinfo=timezone.utc).astimezone(ist_offset)
+            punch_out_local = punch_out.astimezone(ist_offset) if punch_out.tzinfo else punch_out.replace(tzinfo=ist_offset)
 
         # Parse settings times
         try:
@@ -82,7 +82,7 @@ class TimeEngine:
             if punch_in_local <= lunch_start and punch_out_local >= lunch_end:
                 total_seconds -= 1800 # 30 mins in seconds
                 
-            result["net_working_hours"] = round(total_seconds / 3600.0, 2)
+            result["net_working_hours"] = max(0.0, round(total_seconds / 3600.0, 2))
             
             # Re-evaluate status based on total worked hours
             shift_length_hours = (shift_end - shift_start).total_seconds() / 3600.0
