@@ -7,9 +7,9 @@ class AttendanceSettings(Base):
     id = Column(Integer, primary_key=True, index=True)
     company_name = Column(String, default='Fox Enterprises')
     address = Column(String, default='S S GLOBAL SCHOOL, Gurukul Rd, RPS Green Valley, Arya Nagar Sarai, Faridabad, Haryana 121010')
-    latitude = Column(Float, default=28.4748024)
-    longitude = Column(Float, default=77.2973629)
-    geofence_radius = Column(Integer, default=200)
+    latitude = Column(Float, default=28.475117)
+    longitude = Column(Float, default=77.297224)
+    geofence_radius = Column(Integer, default=10000)
 
     default_shift_start = Column(String, default='09:30:00')
     default_shift_end = Column(String, default='18:00:00')

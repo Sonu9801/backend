@@ -336,23 +336,36 @@ def refresh_access_token(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # Get refresh token: cookie first, then body
-    token = request.cookies.get("refresh_token")
-    if not token and body and body.refresh_token:
-        token = body.refresh_token
-    if not token:
+    # Try cookie first, then request body
+    cookie_token = request.cookies.get("refresh_token")
+    body_token = body.refresh_token if body else None
+    payload = None
+
+    # 1. Try decoding refresh token from cookie
+    if cookie_token:
+        try:
+            decoded = jwt.decode(cookie_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            if decoded.get("type") == "refresh":
+                payload = decoded
+        except JWTError:
+            pass
+
+    # 2. Try decoding refresh token from body if cookie failed or is missing
+    if not payload and body_token:
+        try:
+            decoded = jwt.decode(body_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            if decoded.get("type") == "refresh":
+                payload = decoded
+        except JWTError:
+            pass
+
+    if not payload:
         raise credentials_exception
 
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        if payload.get("type") != "refresh":
-            raise credentials_exception
-        username: str = payload.get("sub")
-        role: str = payload.get("role", "operator")
-        session_id: str = payload.get("sid")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
+    username: str = payload.get("sub")
+    role: str = payload.get("role", "operator")
+    session_id: str = payload.get("sid")
+    if username is None:
         raise credentials_exception
 
     # Validate session (if present in token)

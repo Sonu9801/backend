@@ -148,8 +148,8 @@ async def get_current_user(
     Resolve the current user from JWT (cookie or header).
     
     Flow:
-      1. Extract token from cookie or Authorization header
-      2. Decode JWT, validate type=access
+      1. Extract token from cookie first, decode and validate.
+      2. If cookie validation fails or is missing, try bearer token from Authorization header.
       3. If session_id in JWT, validate session is still active
       4. Check user cache before hitting DB
       5. Return User object
@@ -160,22 +160,37 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    token = _extract_token(request, bearer_token)
-    if not token:
+    cookie_token = request.cookies.get("access_token")
+    payload = None
+
+    # 1. Try decoding access token from cookie
+    if cookie_token:
+        try:
+            decoded = jwt.decode(cookie_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            if decoded.get("type") == "access":
+                payload = decoded
+        except JWTError:
+            pass
+
+    # 2. Try decoding access token from Authorization header if cookie failed or is missing
+    if not payload and bearer_token:
+        try:
+            decoded = jwt.decode(bearer_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            if decoded.get("type") == "access":
+                payload = decoded
+        except JWTError:
+            pass
+
+    if not payload:
         raise credentials_exception
 
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        if payload.get("type") != "access":
-            raise credentials_exception
-        username: str = payload.get("sub")
-        role: str = payload.get("role", "operator")
-        session_id: Optional[str] = payload.get("sid")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username, role=role)
-    except JWTError:
+    username: str = payload.get("sub")
+    role: str = payload.get("role", "operator")
+    session_id: Optional[str] = payload.get("sid")
+    if username is None:
         raise credentials_exception
+
+    token_data = TokenData(username=username, role=role)
 
     # Validate server-side session (if token has session_id)
     if session_id:

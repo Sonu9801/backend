@@ -33,7 +33,7 @@ async def upload_invoice(
     db: Session = Depends(get_db)
 ):
     try:
-        if current_user.role not in ["admin", "finance_manager", "owner"]:
+        if current_user.role not in ["admin", "finance_manager", "owner", "supervisor", "manager"]:
             raise HTTPException(status_code=403, detail="Not authorized")
 
         # Save file
@@ -95,7 +95,7 @@ async def create_invoice(
     current_user: User = Depends(get_current_user)
 ):
     try:
-        if current_user.role not in ["admin", "finance_manager", "owner"]:
+        if current_user.role not in ["admin", "finance_manager", "owner", "supervisor", "manager"]:
             raise HTTPException(status_code=403, detail="Not authorized")
             
         # Layer 2: Invoice Number + Vendor Validation
@@ -294,7 +294,7 @@ async def update_invoice(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user.role not in ["admin", "finance_manager", "owner"]:
+    if current_user.role not in ["admin", "finance_manager", "owner", "supervisor", "manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
         
     db_invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
@@ -361,7 +361,7 @@ async def delete_invoice(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user.role not in ["admin", "finance_manager", "owner"]:
+    if current_user.role not in ["admin", "finance_manager", "owner", "manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
         
     db_invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()

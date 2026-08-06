@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timedelta, date, time
+from datetime import datetime, timedelta, date, time, timezone
 from app.models.attendance_settings import AttendanceSettings
 from app.models.attendance import Attendance
 from app.models.salary_profile import SalaryProfile
@@ -36,6 +36,13 @@ class GeofenceEngine:
 class TimeEngine:
     @staticmethod
     def calculate_status(settings: AttendanceSettings, punch_in: datetime, punch_out: datetime = None) -> dict:
+        # Convert UTC punch times to Indian Standard Time (IST) to match shift settings
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        punch_in_local = punch_in.astimezone(ist_offset) if punch_in.tzinfo else punch_in.replace(tzinfo=timezone.utc).astimezone(ist_offset)
+        punch_out_local = None
+        if punch_out:
+            punch_out_local = punch_out.astimezone(ist_offset) if punch_out.tzinfo else punch_out.replace(tzinfo=timezone.utc).astimezone(ist_offset)
+
         # Parse settings times
         try:
             start_h, start_m, start_s = map(int, settings.default_shift_start.split(':'))
@@ -46,16 +53,16 @@ class TimeEngine:
             end_h, end_m, end_s = 18, 0, 0
             half_day_h, half_day_m, half_day_s = 10, 0, 0
             
-        shift_start = punch_in.replace(hour=start_h, minute=start_m, second=start_s)
-        shift_end = punch_in.replace(hour=end_h, minute=end_m, second=end_s)
-        half_day_time = punch_in.replace(hour=half_day_h, minute=half_day_m, second=half_day_s)
+        shift_start = punch_in_local.replace(hour=start_h, minute=start_m, second=start_s)
+        shift_end = punch_in_local.replace(hour=end_h, minute=end_m, second=end_s)
+        half_day_time = punch_in_local.replace(hour=half_day_h, minute=half_day_m, second=half_day_s)
         
         late_minutes = 0
-        if punch_in > shift_start:
-            late_minutes = int((punch_in - shift_start).total_seconds() / 60)
+        if punch_in_local > shift_start:
+            late_minutes = int((punch_in_local - shift_start).total_seconds() / 60)
             
         status = "Present"
-        if punch_in > half_day_time:
+        if punch_in_local > half_day_time:
             status = "Half Day"
             
         result = {
@@ -66,13 +73,13 @@ class TimeEngine:
             "early_exit_minutes": 0
         }
         
-        if punch_out:
-            total_seconds = (punch_out - punch_in).total_seconds()
+        if punch_out_local:
+            total_seconds = (punch_out_local - punch_in_local).total_seconds()
             
             # Deduct 30 mins (0.5 hours) lunch break if worker was present between 01:00 PM and 01:30 PM
-            lunch_start = punch_in.replace(hour=13, minute=0, second=0)
-            lunch_end = punch_in.replace(hour=13, minute=30, second=0)
-            if punch_in <= lunch_start and punch_out >= lunch_end:
+            lunch_start = punch_in_local.replace(hour=13, minute=0, second=0)
+            lunch_end = punch_in_local.replace(hour=13, minute=30, second=0)
+            if punch_in_local <= lunch_start and punch_out_local >= lunch_end:
                 total_seconds -= 1800 # 30 mins in seconds
                 
             result["net_working_hours"] = round(total_seconds / 3600.0, 2)
@@ -87,11 +94,11 @@ class TimeEngine:
             elif result["net_working_hours"] < (shift_length_hours - 1.0) and result["status"] != "Absent":
                 result["status"] = "Half Day"
             
-            if punch_out < shift_end:
-                result["early_exit_minutes"] = int((shift_end - punch_out).total_seconds() / 60)
+            if punch_out_local < shift_end:
+                result["early_exit_minutes"] = int((shift_end - punch_out_local).total_seconds() / 60)
             
-            if settings.enable_ot and punch_out > shift_end:
-                ot_seconds = (punch_out - shift_end).total_seconds()
+            if settings.enable_ot and punch_out_local > shift_end:
+                ot_seconds = (punch_out_local - shift_end).total_seconds()
                 if ot_seconds >= (settings.min_ot_minutes * 60):
                     ot_hrs = round(ot_seconds / 3600.0, 2)
                     result["ot_hours"] = min(ot_hrs, settings.max_ot_hours)
@@ -130,10 +137,24 @@ class PayrollSyncEngine:
             )
             db.add(payroll_record)
             
-        all_month_attendances = db.query(Attendance).filter(
-            Attendance.worker_id == attendance.worker_id,
-            Attendance.date.like(f"{month_str}-%")
-        ).all()
+        try:
+            year_num, month_num = map(int, month_str.split("-"))
+            start_date = date(year_num, month_num, 1)
+            end_date = date(year_num, month_num, days_in_month)
+            all_month_attendances = db.query(Attendance).filter(
+                Attendance.worker_id == attendance.worker_id,
+                Attendance.date >= start_date,
+                Attendance.date <= end_date
+            ).all()
+        except Exception as e:
+            # Fallback to loading all records and filtering in Python if parsing fails
+            all_month_attendances = db.query(Attendance).filter(
+                Attendance.worker_id == attendance.worker_id
+            ).all()
+            all_month_attendances = [
+                att for att in all_month_attendances 
+                if (att.date.strftime("%Y-%m") if hasattr(att.date, 'strftime') else str(att.date)[:7]) == month_str
+            ]
         
         present = 0; absent = 0; half = 0; late = 0;
         leave = 0; sunday = 0; holiday = 0
