@@ -15,6 +15,14 @@ import os
 import shutil
 import uuid
 
+def to_ist(dt: datetime) -> Optional[datetime]:
+    if not dt:
+        return None
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ist_offset)
+
 router = APIRouter(prefix="/attendance", tags=["Attendance"], dependencies=[Depends(get_current_active_user)])
 
 UPLOAD_DIR = "uploads/attendance_photos"
@@ -116,6 +124,8 @@ async def punch_attendance(
     if action.lower() == "punch in":
         record.punch_in = now
         record.punch_in_photo_url = photo_url
+        record.punch_out = None
+        record.punch_out_photo_url = None
         worker.status = "Active"
         
         stats = TimeEngine.calculate_status(settings, punch_in=now)
@@ -177,8 +187,8 @@ def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
         "break_time": record.break_time or 0.0,
         "late_minutes": record.late_minutes or 0,
         "ot_hours": record.ot_hours or 0.0,
-        "punch_in": record.punch_in.isoformat() if record.punch_in else None,
-        "punch_out": record.punch_out.isoformat() if record.punch_out else None
+        "punch_in": to_ist(record.punch_in).isoformat() if record.punch_in else None,
+        "punch_out": to_ist(record.punch_out).isoformat() if record.punch_out else None
     }
 
 @router.get("/worker/{worker_id}/history")
@@ -195,8 +205,8 @@ def get_worker_history(worker_id: int, db: Session = Depends(get_db)):
             "id": r.id,
             "date": r.date.isoformat(),
             "status": r.status,
-            "punch_in": r.punch_in.isoformat() if r.punch_in else None,
-            "punch_out": r.punch_out.isoformat() if r.punch_out else None,
+            "punch_in": to_ist(r.punch_in).isoformat() if r.punch_in else None,
+            "punch_out": to_ist(r.punch_out).isoformat() if r.punch_out else None,
             "net_working_hours": r.net_working_hours,
             "ot_hours": r.ot_hours,
             "late_minutes": r.late_minutes
