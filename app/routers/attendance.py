@@ -20,7 +20,7 @@ def to_ist(dt: datetime) -> Optional[datetime]:
         return None
     ist_offset = timezone(timedelta(hours=5, minutes=30))
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=ist_offset)
     return dt.astimezone(ist_offset)
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"], dependencies=[Depends(get_current_active_user)])
@@ -320,8 +320,8 @@ def get_detailed_logs(
                 "employee_id": worker.employee_id,
                 "department": worker.department,
                 "date": r.date.isoformat() if r.date else None,
-                "punch_in": r.punch_in.isoformat() if r.punch_in else None,
-                "punch_out": r.punch_out.isoformat() if r.punch_out else None,
+                "punch_in": to_ist(r.punch_in).isoformat() if r.punch_in else None,
+                "punch_out": to_ist(r.punch_out).isoformat() if r.punch_out else None,
                 "status": r.status,
                 "net_working_hours": r.net_working_hours,
                 "ot_hours": r.ot_hours,
@@ -440,8 +440,8 @@ async def update_attendance(id: int, payload: AttendanceUpdatePayload, db: Sessi
     # Build old data dictionary manually since it's not a Pydantic model directly
     old_data = {
         "status": record.status,
-        "punch_in": record.punch_in.isoformat() if record.punch_in else None,
-        "punch_out": record.punch_out.isoformat() if record.punch_out else None,
+        "punch_in": to_ist(record.punch_in).isoformat() if record.punch_in else None,
+        "punch_out": to_ist(record.punch_out).isoformat() if record.punch_out else None,
         "net_working_hours": record.net_working_hours,
         "ot_hours": record.ot_hours,
         "late_minutes": record.late_minutes
@@ -459,8 +459,8 @@ async def update_attendance(id: int, payload: AttendanceUpdatePayload, db: Sessi
     
     new_data = {
         "status": record.status,
-        "punch_in": record.punch_in.isoformat() if record.punch_in else None,
-        "punch_out": record.punch_out.isoformat() if record.punch_out else None,
+        "punch_in": to_ist(record.punch_in).isoformat() if record.punch_in else None,
+        "punch_out": to_ist(record.punch_out).isoformat() if record.punch_out else None,
         "net_working_hours": record.net_working_hours,
         "ot_hours": record.ot_hours,
         "late_minutes": record.late_minutes

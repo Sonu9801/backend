@@ -36,12 +36,16 @@ class GeofenceEngine:
 class TimeEngine:
     @staticmethod
     def calculate_status(settings: AttendanceSettings, punch_in: datetime, punch_out: datetime = None) -> dict:
-        # Convert UTC punch times to Indian Standard Time (IST) to match shift settings
         ist_offset = timezone(timedelta(hours=5, minutes=30))
-        punch_in_local = punch_in.astimezone(ist_offset) if punch_in.tzinfo else punch_in.replace(tzinfo=ist_offset)
-        punch_out_local = None
-        if punch_out:
-            punch_out_local = punch_out.astimezone(ist_offset) if punch_out.tzinfo else punch_out.replace(tzinfo=ist_offset)
+        
+        # Helper to convert naive database IST datetime or aware datetime to IST
+        def to_ist_local(dt: datetime) -> datetime:
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=ist_offset)
+            return dt.astimezone(ist_offset)
+
+        punch_in_local = to_ist_local(punch_in)
+        punch_out_local = to_ist_local(punch_out) if punch_out else None
 
         # Parse settings times
         try:
@@ -98,10 +102,12 @@ class TimeEngine:
                 result["early_exit_minutes"] = int((shift_end - punch_out_local).total_seconds() / 60)
             
             if settings.enable_ot and punch_out_local > shift_end:
-                ot_seconds = (punch_out_local - shift_end).total_seconds()
-                if ot_seconds >= (settings.min_ot_minutes * 60):
-                    ot_hrs = round(ot_seconds / 3600.0, 2)
-                    result["ot_hours"] = min(ot_hrs, settings.max_ot_hours)
+                ot_start = max(shift_end, punch_in_local)
+                if punch_out_local > ot_start:
+                    ot_seconds = (punch_out_local - ot_start).total_seconds()
+                    if ot_seconds >= (settings.min_ot_minutes * 60):
+                        ot_hrs = round(ot_seconds / 3600.0, 2)
+                        result["ot_hours"] = min(ot_hrs, settings.max_ot_hours)
                     
         return result
 

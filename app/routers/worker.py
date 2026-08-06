@@ -85,11 +85,11 @@ def get_dashboard_stats(
 
     if today_record:
         if today_record.punch_in:
-            # Treat naive database time as UTC, then convert to IST offset
-            p_in = today_record.punch_in.replace(tzinfo=timezone.utc).astimezone(ist_offset) if today_record.punch_in.tzinfo is None else today_record.punch_in.astimezone(ist_offset)
+            # Treat naive database time as IST
+            p_in = today_record.punch_in.replace(tzinfo=ist_offset) if today_record.punch_in.tzinfo is None else today_record.punch_in.astimezone(ist_offset)
             today_punch_in = p_in.strftime("%I:%M %p")
         if today_record.punch_out:
-            p_out = today_record.punch_out.replace(tzinfo=timezone.utc).astimezone(ist_offset) if today_record.punch_out.tzinfo is None else today_record.punch_out.astimezone(ist_offset)
+            p_out = today_record.punch_out.replace(tzinfo=ist_offset) if today_record.punch_out.tzinfo is None else today_record.punch_out.astimezone(ist_offset)
             today_punch_out = p_out.strftime("%I:%M %p")
         if today_record.net_working_hours is not None:
             today_working_hours = f"{today_record.net_working_hours:.2f} hrs"
