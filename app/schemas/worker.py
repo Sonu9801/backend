@@ -1,5 +1,6 @@
 from app.schemas.base import CamelModel
 from typing import Optional, List
+from pydantic import BaseModel
 
 class WorkerBase(CamelModel):
     employee_id: str
@@ -103,18 +104,24 @@ class WorkerJob(WorkerJobBase):
     class Config:
         from_attributes = True
 
-class WorkerDashboardStats(CamelModel):
-    present_days: int
-    absent_days: int
-    leave_days: int
+class WorkerDashboardStats(BaseModel):
+    present_days: float
+    absent_days: float
+    leave_days: float
     ot_hours: float
     sunday_worked: int
     total_assigned_jobs: int
     pending_jobs: int
     in_progress_jobs: int
     completed_today: int
+    
+    # Today's punch details
+    today_punch_in: str = "--"
+    today_punch_out: str = "--"
+    today_working_hours: str = "--"
+    today_ot_hours: str = "--"
 
-class PerformanceStats(CamelModel):
+class PerformanceStats(BaseModel):
     jobs_completed: int
     avg_completion_time_hrs: float
     attendance_percent: float
