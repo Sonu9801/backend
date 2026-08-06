@@ -62,10 +62,9 @@ async def punch_attendance(
         )
         db.add(notification)
         # Create an exception record
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
         exc = AttendanceException(
             worker_id=worker.id,
-            date=datetime.now(ist_offset).date(),
+            date=datetime.now().date(),
             exception_type="Outside Geofence",
             notes=geo_msg
         )
@@ -83,7 +82,7 @@ async def punch_attendance(
         photo_url = f"/uploads/attendance_photos/{filename}"
 
     ist_offset = timezone(timedelta(hours=5, minutes=30))
-    now = datetime.now(ist_offset)
+    now = datetime.now()
     today = now.date()
 
     # Prevent duplicate punches (if already punched in/out in the last 1 minute)
@@ -163,8 +162,7 @@ async def punch_attendance(
 
 @router.get("/worker/{worker_id}/summary")
 def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
-    today = datetime.now(ist_offset).date()
+    today = datetime.now().date()
     record = db.query(Attendance).filter(
         Attendance.worker_id == worker_id, 
         Attendance.date == today
@@ -193,8 +191,7 @@ def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
 
 @router.get("/worker/{worker_id}/history")
 def get_worker_history(worker_id: int, db: Session = Depends(get_db)):
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
-    thirty_days_ago = datetime.now(ist_offset).date() - timedelta(days=30)
+    thirty_days_ago = datetime.now().date() - timedelta(days=30)
     records = db.query(Attendance).filter(
         Attendance.worker_id == worker_id,
         Attendance.date >= thirty_days_ago
@@ -217,8 +214,7 @@ def get_worker_history(worker_id: int, db: Session = Depends(get_db)):
 @router.get("/worker/{worker_id}/monthly-summary")
 def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = Depends(get_db)):
     # month format: YYYY-MM
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
-    target_date = datetime.strptime(month, "%Y-%m").date() if month else datetime.now(ist_offset).date()
+    target_date = datetime.strptime(month, "%Y-%m").date() if month else datetime.now().date()
     
     import calendar
     _, last_day = calendar.monthrange(target_date.year, target_date.month)
@@ -503,8 +499,7 @@ def get_analytics(
     user = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
-    now = datetime.now(ist_offset)
+    now = datetime.now()
     today = now.date()
     
     query_workers = db.query(User).filter(User.employee_id.isnot(None))
