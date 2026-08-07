@@ -26,12 +26,16 @@ class GeofenceEngine:
         if accuracy and accuracy > 50:
             return False, "GPS accuracy too low."
             
-        distance = calculate_distance(lat, lng, settings.latitude, settings.longitude)
+        settings_lat = settings.latitude if (settings and settings.latitude is not None) else 28.475117
+        settings_lng = settings.longitude if (settings and settings.longitude is not None) else 77.297224
+        radius = settings.geofence_radius if (settings and settings.geofence_radius is not None) else 10000
+
+        distance = calculate_distance(lat, lng, settings_lat, settings_lng)
         
-        if distance <= settings.geofence_radius:
+        if distance <= radius:
             return True, "Inside geofence"
         else:
-            return False, f"Outside geofence ({int(distance)}m > {settings.geofence_radius}m)"
+            return False, f"Outside geofence ({int(distance)}m > {radius}m)"
 
 class TimeEngine:
     @staticmethod

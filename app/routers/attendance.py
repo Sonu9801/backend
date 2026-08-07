@@ -92,8 +92,9 @@ async def punch_attendance(
     ).order_by(AttendanceLog.timestamp.desc()).first()
 
     if last_log and last_log.timestamp:
-        last_log_ts = last_log.timestamp.replace(tzinfo=ist_offset) if last_log.timestamp.tzinfo is None else last_log.timestamp.astimezone(ist_offset)
-        if (now - last_log_ts).total_seconds() < 60:
+        now_naive = now.replace(tzinfo=None)
+        last_log_naive = last_log.timestamp.replace(tzinfo=None)
+        if abs((now_naive - last_log_naive).total_seconds()) < 60:
             raise HTTPException(status_code=400, detail="Duplicate punch detected. Please try again later.")
 
     log = AttendanceLog(
@@ -150,13 +151,16 @@ async def punch_attendance(
 
     db.commit()
 
-    await manager.broadcast({"type": "ATTENDANCE_UPDATE", "data": {
-        "worker_id": worker.id,
-        "worker_name": worker.name,
-        "action": action,
-        "status": worker.status,
-        "timestamp": now.isoformat()
-    }})
+    try:
+        await manager.broadcast({"type": "ATTENDANCE_UPDATE", "data": {
+            "worker_id": worker.id,
+            "worker_name": worker.name,
+            "action": action,
+            "status": worker.status,
+            "timestamp": now.isoformat()
+        }})
+    except Exception as e:
+        print(f"[WebSocket Warning] Failed to broadcast attendance update: {e}")
 
     return {"message": f"Successfully {action}", "photo_url": photo_url}
 
