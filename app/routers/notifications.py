@@ -28,6 +28,8 @@ class NotificationOut(BaseModel):
     class Config:
         from_attributes = True
 
+from app.services.websocket_manager import manager
+
 @router.get("/notifications", response_model=List[NotificationOut])
 def get_notifications(
     skip: int = 0, 
@@ -50,7 +52,7 @@ def get_notifications(
     return notifications
 
 @router.post("/notifications/{notification_id}/read")
-def mark_as_read(notification_id: int, db: Session = Depends(get_db)):
+async def mark_as_read(notification_id: int, db: Session = Depends(get_db)):
     notification = db.query(Notification).filter(Notification.id == notification_id).first()
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
@@ -58,10 +60,14 @@ def mark_as_read(notification_id: int, db: Session = Depends(get_db)):
     notification.read = True
     notification.read_at = datetime.utcnow()
     db.commit()
+    try:
+        await manager.broadcast({"type": "NEW_NOTIFICATION"})
+    except Exception:
+        pass
     return {"status": "success"}
 
 @router.post("/notifications/{notification_id}/click")
-def mark_as_clicked(notification_id: int, db: Session = Depends(get_db)):
+async def mark_as_clicked(notification_id: int, db: Session = Depends(get_db)):
     notification = db.query(Notification).filter(Notification.id == notification_id).first()
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
@@ -74,12 +80,20 @@ def mark_as_clicked(notification_id: int, db: Session = Depends(get_db)):
         notification.read_at = datetime.utcnow()
         
     db.commit()
+    try:
+        await manager.broadcast({"type": "NEW_NOTIFICATION"})
+    except Exception:
+        pass
     return {"status": "success", "target_url": notification.target_url}
 
 @router.post("/notifications/read-all")
-def mark_all_as_read(db: Session = Depends(get_db)):
+async def mark_all_as_read(db: Session = Depends(get_db)):
     db.query(Notification).filter(Notification.read == False).update(
         {"read": True, "read_at": datetime.utcnow()}
     )
     db.commit()
+    try:
+        await manager.broadcast({"type": "NEW_NOTIFICATION"})
+    except Exception:
+        pass
     return {"status": "success"}

@@ -75,6 +75,12 @@ async def update_dispatch_status(record_id: int, status: str, db: Session = Depe
     db.commit()
     db.refresh(record)
     
+    if status.lower() == "delayed":
+        try:
+            await manager.broadcast({"type": "NEW_NOTIFICATION"})
+        except Exception:
+            pass
+    
     # Broadcast status update
     response_data = DispatchRecordResponse.model_validate(record).model_dump()
     await manager.broadcast({

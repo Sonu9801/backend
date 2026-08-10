@@ -217,26 +217,44 @@ def get_sales_invoices(
 
 @router.get("/dashboard-stats")
 def get_dashboard_stats(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    from sqlalchemy.sql.functions import coalesce
+    s_date = start_date or date_from
+    e_date = end_date or date_to
+    
     today = date.today()
     this_month = today.replace(day=1)
     
-    today_uploads = db.query(SalesInvoice).filter(func.date(SalesInvoice.created_at) == today).count()
-    today_revenue = db.query(func.sum(SalesInvoice.grand_total)).filter(func.date(SalesInvoice.created_at) == today).scalar() or 0
-    monthly_revenue = db.query(func.sum(SalesInvoice.grand_total)).filter(func.date(SalesInvoice.created_at) >= this_month).scalar() or 0
-    pending_review = db.query(SalesInvoice).filter(SalesInvoice.approval_status == SalesApprovalStatus.PENDING_REVIEW).count()
+    query = db.query(SalesInvoice)
+    if s_date:
+        query = query.filter(coalesce(SalesInvoice.invoice_date, func.date(SalesInvoice.created_at)) >= s_date)
+    if e_date:
+        query = query.filter(coalesce(SalesInvoice.invoice_date, func.date(SalesInvoice.created_at)) <= e_date)
+        
+    total_invoices_count = query.count()
+    total_revenue_all = query.with_entities(func.sum(SalesInvoice.grand_total)).scalar() or 0
+    pending_review = query.filter(SalesInvoice.approval_status == SalesApprovalStatus.PENDING_REVIEW).count()
+    approved = query.filter(SalesInvoice.approval_status == SalesApprovalStatus.APPROVED).count()
+    rejected = query.filter(SalesInvoice.approval_status == SalesApprovalStatus.REJECTED).count()
     
-    approved = db.query(SalesInvoice).filter(SalesInvoice.approval_status == SalesApprovalStatus.APPROVED).count()
-    rejected = db.query(SalesInvoice).filter(SalesInvoice.approval_status == SalesApprovalStatus.REJECTED).count()
+    outstanding = query.with_entities(func.sum(SalesInvoice.outstanding_amount)).scalar() or 0
+    received = query.with_entities(func.sum(SalesInvoice.received_amount)).scalar() or 0
     
-    outstanding = db.query(func.sum(SalesInvoice.outstanding_amount)).scalar() or 0
-    received = db.query(func.sum(SalesInvoice.received_amount)).scalar() or 0
-    
-    total_invoices_count = db.query(SalesInvoice).count()
-    total_revenue_all = db.query(func.sum(SalesInvoice.grand_total)).scalar() or 0
-    
+    if s_date or e_date:
+        today_uploads = total_invoices_count
+        today_revenue = total_revenue_all
+        monthly_revenue = total_revenue_all
+    else:
+        today_uploads = db.query(SalesInvoice).filter(func.date(SalesInvoice.created_at) == today).count()
+        today_revenue = db.query(func.sum(SalesInvoice.grand_total)).filter(func.date(SalesInvoice.created_at) == today).scalar() or 0
+        monthly_revenue = db.query(func.sum(SalesInvoice.grand_total)).filter(func.date(SalesInvoice.created_at) >= this_month).scalar() or 0
+
     average_invoice_value = total_revenue_all / total_invoices_count if total_invoices_count > 0 else 0
     collection_rate = (received / total_revenue_all * 100) if total_revenue_all > 0 else 0
     
@@ -255,33 +273,60 @@ def get_dashboard_stats(
 
 @router.get("/analytics")
 def get_analytics(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    from sqlalchemy.sql.functions import coalesce
+    s_date = start_date or date_from
+    e_date = end_date or date_to
+    
+    base_query = db.query(SalesInvoice)
+    if s_date:
+        base_query = base_query.filter(coalesce(SalesInvoice.invoice_date, func.date(SalesInvoice.created_at)) >= s_date)
+    if e_date:
+        base_query = base_query.filter(coalesce(SalesInvoice.invoice_date, func.date(SalesInvoice.created_at)) <= e_date)
+
     # OEM Distribution
-    oem_dist = db.query(SalesInvoice.oem, func.sum(SalesInvoice.grand_total).label("total")).group_by(SalesInvoice.oem).all()
+    oem_dist = base_query.with_entities(SalesInvoice.oem, func.sum(SalesInvoice.grand_total).label("total")).group_by(SalesInvoice.oem).all()
     
     # Top Customers
-    top_customers = db.query(SalesInvoice.customer_name, func.sum(SalesInvoice.grand_total).label("total")).group_by(SalesInvoice.customer_name).order_by(desc("total")).limit(5).all()
+    top_customers = base_query.with_entities(SalesInvoice.customer_name, func.sum(SalesInvoice.grand_total).label("total")).group_by(SalesInvoice.customer_name).order_by(desc("total")).limit(5).all()
     
     # Status Distribution (mapped to categoryDistribution for frontend)
-    status_dist = db.query(SalesInvoice.payment_status, func.sum(SalesInvoice.grand_total).label("total")).group_by(SalesInvoice.payment_status).all()
+    status_dist = base_query.with_entities(SalesInvoice.payment_status, func.sum(SalesInvoice.grand_total).label("total")).group_by(SalesInvoice.payment_status).all()
     
-    # Monthly Trend (last 6 months)
-    six_months_ago = datetime.now() - timedelta(days=180)
-    monthly_trend = db.query(
-        func.to_char(SalesInvoice.invoice_date, 'YYYY-MM').label("month"),
-        func.sum(SalesInvoice.grand_total).label("total")
-    ).filter(SalesInvoice.invoice_date >= six_months_ago).group_by("month").order_by("month").all()
+    # Monthly Trend
+    if s_date or e_date:
+        monthly_trend = base_query.with_entities(
+            func.to_char(coalesce(SalesInvoice.invoice_date, func.date(SalesInvoice.created_at)), 'YYYY-MM').label("month"),
+            func.sum(SalesInvoice.grand_total).label("total")
+        ).group_by("month").order_by("month").all()
+    else:
+        six_months_ago = datetime.now() - timedelta(days=180)
+        monthly_trend = db.query(
+            func.to_char(SalesInvoice.invoice_date, 'YYYY-MM').label("month"),
+            func.sum(SalesInvoice.grand_total).label("total")
+        ).filter(SalesInvoice.invoice_date >= six_months_ago).group_by("month").order_by("month").all()
     
     # Work Type Distribution
-    work_type_dist = db.query(SalesInvoice.work_type, func.sum(SalesInvoice.grand_total).label("total")).group_by(SalesInvoice.work_type).all()
+    work_type_dist = base_query.with_entities(SalesInvoice.work_type, func.sum(SalesInvoice.grand_total).label("total")).group_by(SalesInvoice.work_type).all()
     
-    # Outstanding Trend (last 6 months)
-    outstanding_trend = db.query(
-        func.to_char(SalesInvoice.invoice_date, 'YYYY-MM').label("month"),
-        func.sum(SalesInvoice.outstanding_amount).label("total")
-    ).filter(SalesInvoice.invoice_date >= six_months_ago).group_by("month").order_by("month").all()
+    # Outstanding Trend
+    if s_date or e_date:
+        outstanding_trend = base_query.with_entities(
+            func.to_char(coalesce(SalesInvoice.invoice_date, func.date(SalesInvoice.created_at)), 'YYYY-MM').label("month"),
+            func.sum(SalesInvoice.outstanding_amount).label("total")
+        ).group_by("month").order_by("month").all()
+    else:
+        six_months_ago = datetime.now() - timedelta(days=180)
+        outstanding_trend = db.query(
+            func.to_char(SalesInvoice.invoice_date, 'YYYY-MM').label("month"),
+            func.sum(SalesInvoice.outstanding_amount).label("total")
+        ).filter(SalesInvoice.invoice_date >= six_months_ago).group_by("month").order_by("month").all()
 
     return {
         "oemDistribution": [{"name": d[0] or "Unassigned", "value": d[1]} for d in oem_dist],

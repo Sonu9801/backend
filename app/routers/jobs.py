@@ -50,6 +50,11 @@ async def assign_job(payload: ProductionJobCreate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(job)
     
+    try:
+        await manager.broadcast({"type": "NEW_NOTIFICATION"})
+    except Exception:
+        pass
+    
     # Broadcast to update production board
     await manager.broadcast({
         "type": "JOB_ASSIGNED",

@@ -70,6 +70,10 @@ async def punch_attendance(
         )
         db.add(exc)
         db.commit()
+        try:
+            await manager.broadcast({"type": "NEW_NOTIFICATION"})
+        except Exception:
+            pass
         raise HTTPException(status_code=400, detail=geo_msg)
 
     # Save photo if exists

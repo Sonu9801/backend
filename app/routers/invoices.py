@@ -223,22 +223,54 @@ def get_invoices(
 
 @router.get("/dashboard-stats")
 def get_dashboard_stats(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    from sqlalchemy.sql.functions import coalesce
+    s_date_str = start_date or date_from
+    e_date_str = end_date or date_to
+    
+    query = db.query(Invoice)
+    if s_date_str:
+        try:
+            s_date = datetime.strptime(s_date_str, "%Y-%m-%d").date()
+            query = query.filter(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)) >= s_date)
+        except ValueError:
+            pass
+
+    if e_date_str:
+        try:
+            e_date = datetime.strptime(e_date_str, "%Y-%m-%d").date()
+            query = query.filter(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)) <= e_date)
+        except ValueError:
+            pass
+
     today = date.today()
     this_month = today.replace(day=1)
     
-    today_uploads = db.query(Invoice).filter(func.date(Invoice.created_at) == today).count()
-    today_expenses = db.query(func.sum(Invoice.grand_total)).filter(func.date(Invoice.created_at) == today).scalar() or 0
-    monthly_expenses = db.query(func.sum(Invoice.grand_total)).filter(func.date(Invoice.created_at) >= this_month).scalar() or 0
-    pending_review = db.query(Invoice).filter(Invoice.approval_status == ApprovalStatus.PENDING_REVIEW).count()
-    
-    approved = db.query(Invoice).filter(Invoice.approval_status == ApprovalStatus.APPROVED).count()
-    rejected = db.query(Invoice).filter(Invoice.approval_status == ApprovalStatus.REJECTED).count()
-    paid = db.query(Invoice).filter(Invoice.payment_status == PaymentStatus.PAID).count()
-    unpaid = db.query(Invoice).filter(Invoice.payment_status == PaymentStatus.UNPAID).count()
-    gst_this_month = db.query(func.sum(Invoice.gst_amount)).filter(func.date(Invoice.created_at) >= this_month).scalar() or 0
+    total_count = query.count()
+    total_expenses = query.with_entities(func.sum(Invoice.grand_total)).scalar() or 0
+    pending_review = query.filter(Invoice.approval_status == ApprovalStatus.PENDING_REVIEW).count()
+    approved = query.filter(Invoice.approval_status == ApprovalStatus.APPROVED).count()
+    rejected = query.filter(Invoice.approval_status == ApprovalStatus.REJECTED).count()
+    paid = query.filter(Invoice.payment_status == PaymentStatus.PAID).count()
+    unpaid = query.filter(Invoice.payment_status == PaymentStatus.UNPAID).count()
+    gst_total = query.with_entities(func.sum(Invoice.gst_amount)).scalar() or 0
+
+    if s_date_str or e_date_str:
+        today_uploads = total_count
+        today_expenses = total_expenses
+        monthly_expenses = total_expenses
+        gst_this_month = gst_total
+    else:
+        today_uploads = db.query(Invoice).filter(func.date(Invoice.created_at) == today).count()
+        today_expenses = db.query(func.sum(Invoice.grand_total)).filter(func.date(Invoice.created_at) == today).scalar() or 0
+        monthly_expenses = db.query(func.sum(Invoice.grand_total)).filter(func.date(Invoice.created_at) >= this_month).scalar() or 0
+        gst_this_month = db.query(func.sum(Invoice.gst_amount)).filter(func.date(Invoice.created_at) >= this_month).scalar() or 0
 
     return {
         "today_uploads": today_uploads,
@@ -254,24 +286,53 @@ def get_dashboard_stats(
 
 @router.get("/analytics")
 def get_analytics(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    from sqlalchemy.sql.functions import coalesce
+    s_date_str = start_date or date_from
+    e_date_str = end_date or date_to
+    
+    base_query = db.query(Invoice)
+    if s_date_str:
+        try:
+            s_date = datetime.strptime(s_date_str, "%Y-%m-%d").date()
+            base_query = base_query.filter(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)) >= s_date)
+        except ValueError:
+            pass
+
+    if e_date_str:
+        try:
+            e_date = datetime.strptime(e_date_str, "%Y-%m-%d").date()
+            base_query = base_query.filter(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)) <= e_date)
+        except ValueError:
+            pass
+
     # Department Distribution
-    dept_dist = db.query(Invoice.department, func.sum(Invoice.grand_total).label("total")).group_by(Invoice.department).all()
+    dept_dist = base_query.with_entities(Invoice.department, func.sum(Invoice.grand_total).label("total")).group_by(Invoice.department).all()
     
     # Category Distribution
-    cat_dist = db.query(Invoice.expense_category, func.sum(Invoice.grand_total).label("total")).group_by(Invoice.expense_category).all()
+    cat_dist = base_query.with_entities(Invoice.expense_category, func.sum(Invoice.grand_total).label("total")).group_by(Invoice.expense_category).all()
     
     # Top Vendors
-    top_vendors = db.query(Invoice.vendor_name, func.sum(Invoice.grand_total).label("total")).group_by(Invoice.vendor_name).order_by(desc("total")).limit(5).all()
+    top_vendors = base_query.with_entities(Invoice.vendor_name, func.sum(Invoice.grand_total).label("total")).group_by(Invoice.vendor_name).order_by(desc("total")).limit(5).all()
     
-    # Monthly Trend (last 6 months)
-    six_months_ago = datetime.now() - timedelta(days=180)
-    monthly_trend = db.query(
-        func.to_char(Invoice.invoice_date, 'YYYY-MM').label("month"),
-        func.sum(Invoice.grand_total).label("total")
-    ).filter(Invoice.invoice_date >= six_months_ago).group_by("month").order_by("month").all()
+    # Monthly Trend
+    if s_date_str or e_date_str:
+        monthly_trend = base_query.with_entities(
+            func.to_char(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)), 'YYYY-MM').label("month"),
+            func.sum(Invoice.grand_total).label("total")
+        ).group_by("month").order_by("month").all()
+    else:
+        six_months_ago = datetime.now() - timedelta(days=180)
+        monthly_trend = db.query(
+            func.to_char(Invoice.invoice_date, 'YYYY-MM').label("month"),
+            func.sum(Invoice.grand_total).label("total")
+        ).filter(Invoice.invoice_date >= six_months_ago).group_by("month").order_by("month").all()
 
     return {
         "departmentDistribution": [{"name": d[0] or "Unassigned", "value": d[1]} for d in dept_dist],
