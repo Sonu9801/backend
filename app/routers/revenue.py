@@ -408,6 +408,16 @@ async def update_sales_invoice(
                 db.add(notif)
                 
             if key == "payment_status":
+                if "received_amount" not in update_dict:
+                    if new_value == SalesPaymentStatus.PAID or new_value == "Paid":
+                        db_invoice.received_amount = db_invoice.grand_total or 0
+                        db_invoice.outstanding_amount = 0
+                        db_invoice.pending_amount = 0
+                    elif new_value == SalesPaymentStatus.PENDING or new_value == "Pending":
+                        db_invoice.received_amount = 0
+                        db_invoice.outstanding_amount = db_invoice.grand_total or 0
+                        db_invoice.pending_amount = db_invoice.grand_total or 0
+
                 act = ActivityEvent(
                     event_type="sales_invoice_payment_changed",
                     description=f"Sales Bill {db_invoice.invoice_number} payment status updated to {new_value} by {current_user.name}",
