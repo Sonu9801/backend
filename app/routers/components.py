@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 from datetime import datetime
 from app.database import get_db
@@ -71,7 +71,7 @@ def get_worker_components(worker_id: int, db: Session = Depends(get_db)):
 
 @router.get("", response_model=List[ComponentTaskResponse])
 def get_all_components(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
-    return db.query(ComponentTask).order_by(ComponentTask.id.desc()).all()
+    return db.query(ComponentTask).options(joinedload(ComponentTask.workers)).order_by(ComponentTask.id.desc()).all()
 
 @router.delete("/{task_id}")
 def delete_component_task(task_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

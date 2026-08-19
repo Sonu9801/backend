@@ -1,64 +1,78 @@
 import os
 import json
 import re
-from PIL import Image
+from PIL import Image, ImageOps
 import numpy as np
 import google.generativeai as genai
 from app.config import settings
 
 def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
     """
-    Process an image or PDF, convert to PIL Image, and parse required fields using Gemini 1.5 Flash.
+    Process an image or PDF, convert to PIL Image with EXIF orientation correction,
+    and parse required fields using Gemini AI Vision with automatic model fallbacks.
     Returns a dictionary of extracted fields.
     """
     try:
         if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY == "paste_your_key_here":
-            print("WARNING: GEMINI_API_KEY is not set or invalid. Returning empty data.")
+            print("WARNING: GEMINI_API_KEY is not set or invalid.")
             raise ValueError("GEMINI_API_KEY is not set in environment.")
 
         # Configure Gemini
         genai.configure(api_key=settings.GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        
+        # Candidate vision models sequence (will attempt in order if rate limit/quota error occurs)
+        candidate_models = [
+            "gemini-flash-latest",
+            "gemini-2.5-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-2.5-pro",
+            "gemini-flash-lite-latest"
+        ]
         
         if invoice_type == "expense":
             prompt = """
-            Analyze this invoice document and extract the following information.
-            Return ONLY a JSON object exactly matching this structure, with no markdown formatting or other text:
+            Analyze this tax invoice / bill document image carefully and extract the requested fields.
+            NOTE: This document image might be taken from a phone camera and could be oriented sideways, upside down, or vertically (90°, 180°, 270°). Read the text in any orientation.
+            
+            Return ONLY a valid JSON object matching this structure with no extra text or markdown:
             {
-              "invoice_number": "string (or null if not found)",
-              "vendor_name": "string (or null if not found)",
-              "vendor_gstin": "string (or null if not found)",
-              "invoice_date": "YYYY-MM-DD (or null if not found)",
-              "hsn_sac": "string (or null if not found)",
-              "cgst": float (or 0),
-              "sgst": float (or 0),
-              "igst": float (or 0),
-              "gst_amount": float (total GST, or 0),
-              "subtotal": float (or 0),
-              "grand_total": float (or 0)
+              "invoice_number": "string (e.g. INV-102 or Invoice No)",
+              "vendor_name": "string (Company / Vendor header name)",
+              "vendor_gstin": "string (15-digit GSTIN format e.g. 06AAAAA0000A1Z5)",
+              "invoice_date": "YYYY-MM-DD (e.g. 2026-07-28 or converted to YYYY-MM-DD)",
+              "hsn_sac": "string (HSN or SAC code if available)",
+              "cgst": float,
+              "sgst": float,
+              "igst": float,
+              "gst_amount": float,
+              "subtotal": float,
+              "grand_total": float
             }
             """
         else:
             prompt = """
-            Analyze this sales invoice/bill document and extract the following information.
-            Return ONLY a JSON object exactly matching this structure, with no markdown formatting or other text:
+            Analyze this sales invoice / dispatch bill document image carefully and extract the requested fields.
+            NOTE: This document image might be taken from a phone camera and could be oriented sideways, upside down, or vertically (90°, 180°, 270°). Read the text in any orientation.
+
+            Return ONLY a valid JSON object matching this structure with no extra text or markdown:
             {
-              "invoice_number": "string (or null if not found)",
-              "customer_name": "string (or null if not found)",
-              "customer_gstin": "string (or null if not found)",
-              "invoice_date": "YYYY-MM-DD (or null if not found)",
-              "po_number": "string (or null if not found)",
-              "vehicle_number": "string (or null if not found)",
-              "oem": "string (or null if not found)",
-              "hsn_sac": "string (or null if not found)",
-              "cgst": float (or 0),
-              "sgst": float (or 0),
-              "igst": float (or 0),
-              "gst_amount": float (total GST, or 0),
-              "subtotal": float (or 0),
-              "grand_total": float (or 0),
-              "payment_terms": "string (or null if not found)",
-              "due_date": "YYYY-MM-DD (or null if not found)"
+              "invoice_number": "string (or null)",
+              "customer_name": "string (or null)",
+              "customer_gstin": "string (or null)",
+              "invoice_date": "YYYY-MM-DD (or null)",
+              "po_number": "string (or null)",
+              "vehicle_number": "string (or null)",
+              "oem": "string (or null)",
+              "hsn_sac": "string (or null)",
+              "cgst": float,
+              "sgst": float,
+              "igst": float,
+              "gst_amount": float,
+              "subtotal": float,
+              "grand_total": float,
+              "payment_terms": "string (or null)",
+              "due_date": "YYYY-MM-DD (or null)"
             }
             """
 
@@ -71,12 +85,10 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
                 if doc.page_count == 0:
                     raise ValueError("Could not extract pages from PDF. PDF is empty.")
                 page = doc.load_page(0)
-                # Render to pixmap with higher resolution
-                zoom = 2.0  # zoom factor for better OCR resolution
+                zoom = 2.0  # zoom factor for high resolution OCR
                 mat = fitz.Matrix(zoom, zoom)
                 pix = page.get_pixmap(matrix=mat)
                 
-                # Convert fitz pixmap to PIL Image
                 mode = "RGBA" if pix.alpha else "RGB"
                 pil_img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
                 pil_img = pil_img.convert('RGB')
@@ -84,48 +96,71 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
                 raise ValueError(f"Failed to convert PDF using PyMuPDF. Error: {str(e)}")
         else:
             try:
-                pil_img = Image.open(file_path).convert('RGB')
+                raw_img = Image.open(file_path)
+                # Auto-rotate image according to EXIF orientation metadata tag
+                pil_img = ImageOps.exif_transpose(raw_img).convert('RGB')
             except Exception:
                 raise ValueError("Could not read image file.")
 
-        # Pass the PIL image directly to Gemini
-        response = model.generate_content([pil_img, prompt])
+        response = None
+        last_err = None
+
+        # Attempt extraction using fallback models sequence
+        for model_name in candidate_models:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content([pil_img, prompt])
+                if response and response.text:
+                    print(f"[OCR] Successfully extracted using Gemini model '{model_name}'!")
+                    break
+            except Exception as e:
+                print(f"[OCR WARNING] Model '{model_name}' failed: {e}. Trying next model...")
+                last_err = e
+
+        if not response or not response.text:
+            raise ValueError(f"All Gemini OCR models failed or hit rate limits. Last error: {last_err}")
         
-        # Clean up the response text (remove potential markdown block)
+        # Clean up the response text (remove markdown json blocks)
         result_text = response.text.strip()
         
         json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', result_text, re.DOTALL)
         if json_match:
             result_text = json_match.group(1)
         else:
-            # Fallback if no markdown block
             json_match = re.search(r'\{.*?\}', result_text, re.DOTALL)
             if json_match:
                 result_text = json_match.group(0)
             
         extracted_data = json.loads(result_text)
         
-        # Sanitize float fields to prevent Pydantic ValidationError (500 Error)
+        # Sanitize float fields to prevent Pydantic ValidationError
         float_fields = ['cgst', 'sgst', 'igst', 'gst_amount', 'subtotal', 'grand_total']
         for field in float_fields:
             if extracted_data.get(field) is None or str(extracted_data.get(field)).strip().lower() in ["", "null", "none", "n/a"]:
                 extracted_data[field] = 0.0
             else:
                 try:
-                    extracted_data[field] = float(extracted_data[field])
+                    # Clean currency symbols e.g. ₹ or commas
+                    val_clean = re.sub(r'[^\d.]', '', str(extracted_data[field]))
+                    extracted_data[field] = float(val_clean) if val_clean else 0.0
                 except (ValueError, TypeError):
                     extracted_data[field] = 0.0
 
-        # Sanitize date fields
+        # Sanitize date fields (Format to YYYY-MM-DD)
         date_fields = ["invoice_date", "due_date"]
         for d_field in date_fields:
             date_val = extracted_data.get(d_field)
             if date_val:
                 date_str = str(date_val).strip()
-                if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
-                    extracted_data[d_field] = None
-                else:
+                # If date is DD/MM/YYYY or DD-MM-YYYY, convert to YYYY-MM-DD
+                m_dmy = re.match(r'^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})$', date_str)
+                if m_dmy:
+                    day, month, year = m_dmy.groups()
+                    extracted_data[d_field] = f"{year}-{int(month):02d}-{int(day):02d}"
+                elif re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
                     extracted_data[d_field] = date_str
+                else:
+                    extracted_data[d_field] = None
             else:
                 if d_field in extracted_data:
                     extracted_data[d_field] = None
@@ -142,13 +177,17 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
                     else:
                         extracted_data[field] = val_str
 
-        extracted_data["ocr_confidence_score"] = 92.5  # High confidence for AI extraction
+        # Compute calculated confidence based on extracted key fields
+        extracted_keys = sum(1 for k, v in extracted_data.items() if v not in [None, 0.0, 0, "", "0.0"])
+        total_keys = len(extracted_data)
+        confidence = round(min(98.5, max(85.0, (extracted_keys / max(total_keys, 1)) * 100)), 1)
+        extracted_data["ocr_confidence_score"] = confidence
         
         return extracted_data
 
     except Exception as e:
         print(f"Gemini OCR Error: {str(e)}")
-        # Return fallback/empty data on OCR failure so the flow continues manually
+        # Return fallback/empty data on OCR failure so manual entry flow works smoothly
         if invoice_type == "sales":
             return {
                 "invoice_number": None,

@@ -13,8 +13,8 @@ class AttendanceSettings(Base):
 
     default_shift_start = Column(String, default='09:30:00')
     default_shift_end = Column(String, default='18:00:00')
-    present_window_end = Column(String, default='10:30:00')
-    half_day_start = Column(String, default='13:30:00')
+    present_window_end = Column(String, default='11:00:00')
+    half_day_start = Column(String, default='13:00:00')
 
     enable_ot = Column(Boolean, default=True)
     ot_start_time = Column(String, default='18:30:00')

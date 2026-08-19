@@ -33,6 +33,7 @@ class WorkerBase(CamelModel):
     pan_number: Optional[str] = None
     
     face_registration_status: str = "Pending"
+    password: Optional[str] = None
 
 class SalaryProfileBase(CamelModel):
     salary_type: str = "Monthly"

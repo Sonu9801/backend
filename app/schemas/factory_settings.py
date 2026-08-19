@@ -1,12 +1,13 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
+from app.schemas.base import CamelModel
 
-class FactorySettingsBase(BaseModel):
-    facility_name: str
-    address: str
-    operating_hours: str
-    timezone: str
-    departments: List[str]
+class FactorySettingsBase(CamelModel):
+    facility_name: Optional[str] = "FoxFlow Manufacturing Plant"
+    address: Optional[str] = "Industrial Area, Sector 59, Faridabad"
+    operating_hours: Optional[str] = "09:30 AM - 06:00 PM"
+    timezone: Optional[str] = "Asia/Kolkata (IST)"
+    departments: Optional[List[str]] = ["Fabrication", "Paint", "Assembly", "Quality", "Dispatch"]
 
 class FactorySettingsCreate(FactorySettingsBase):
     pass

@@ -51,27 +51,43 @@ class TimeEngine:
         punch_in_local = to_ist_local(punch_in)
         punch_out_local = to_ist_local(punch_out) if punch_out else None
 
-        # Parse settings times
+        # Parse settings times for General Shift
         try:
-            start_h, start_m, start_s = map(int, settings.default_shift_start.split(':'))
-            end_h, end_m, end_s = map(int, settings.default_shift_end.split(':'))
-            half_day_h, half_day_m, half_day_s = map(int, settings.half_day_start.split(':'))
-        except:
-            start_h, start_m, start_s = 9, 0, 0
+            start_h, start_m, start_s = map(int, (settings.default_shift_start or '09:30:00').split(':'))
+            end_h, end_m, end_s = map(int, (settings.default_shift_end or '18:00:00').split(':'))
+        except Exception:
+            start_h, start_m, start_s = 9, 30, 0
             end_h, end_m, end_s = 18, 0, 0
-            half_day_h, half_day_m, half_day_s = 10, 0, 0
+
+        try:
+            late_h, late_m, late_s = map(int, (getattr(settings, 'present_window_end', None) or '11:00:00').split(':'))
+        except Exception:
+            late_h, late_m, late_s = 11, 0, 0
+
+        try:
+            half_day_h, half_day_m, half_day_s = map(int, (settings.half_day_start or '13:00:00').split(':'))
+        except Exception:
+            half_day_h, half_day_m, half_day_s = 13, 0, 0
             
         shift_start = punch_in_local.replace(hour=start_h, minute=start_m, second=start_s)
         shift_end = punch_in_local.replace(hour=end_h, minute=end_m, second=end_s)
-        half_day_time = punch_in_local.replace(hour=half_day_h, minute=half_day_m, second=half_day_s)
+        late_threshold = punch_in_local.replace(hour=late_h, minute=late_m, second=late_s)
+        half_day_threshold = punch_in_local.replace(hour=half_day_h, minute=half_day_m, second=half_day_s)
         
         late_minutes = 0
         if punch_in_local > shift_start:
             late_minutes = int((punch_in_local - shift_start).total_seconds() / 60)
             
-        status = "Present"
-        if punch_in_local > half_day_time:
+        # Business Rule:
+        # Punch-in > 1:00 PM (13:00) -> Half Day
+        # Punch-in > 11:00 AM -> Late
+        # Punch-in <= 11:00 AM -> Present
+        if punch_in_local > half_day_threshold:
             status = "Half Day"
+        elif punch_in_local > late_threshold:
+            status = "Late"
+        else:
+            status = "Present"
             
         result = {
             "late_minutes": late_minutes,

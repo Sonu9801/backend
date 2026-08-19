@@ -174,6 +174,16 @@ async def create_worker(worker_in: WorkerCreate, db: Session = Depends(get_db), 
         import uuid
         worker.email = f"{worker.employee_id or uuid.uuid4().hex[:8]}@foxflow.internal"
         
+    # Auto-set password / PIN (last 4 digits of mobile number or 1234 if not provided)
+    from app.security import hash_password
+    plain_password = data.get("password")
+    if not plain_password or not str(plain_password).strip():
+        if worker.mobile_number and len(str(worker.mobile_number).strip()) >= 4:
+            plain_password = str(worker.mobile_number).strip()[-4:]
+        else:
+            plain_password = "1234"
+    worker.password = hash_password(str(plain_password))
+
     if salary_data:
         worker.salary_profile = SalaryProfile(**salary_data)
         

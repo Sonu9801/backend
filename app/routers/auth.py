@@ -286,12 +286,25 @@ def worker_login(
         User.employee_id.isnot(None),
     ).first()
 
-    if not worker or not worker.password:
+    if not worker:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect mobile number or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # If worker has no password set in DB, accept last 4 digits of mobile or 1234
+    if not worker.password:
+        default_pin = worker.mobile_number.strip()[-4:] if (worker.mobile_number and len(worker.mobile_number.strip()) >= 4) else "1234"
+        if form_data.password == default_pin or form_data.password == "1234":
+            worker.password = hash_password(form_data.password)
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect mobile number or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     if not verify_password(form_data.password, worker.password):
         raise HTTPException(

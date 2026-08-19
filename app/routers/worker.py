@@ -258,10 +258,10 @@ def get_performance_stats(
     current_worker: User = Depends(get_current_worker)
 ):
     return PerformanceStats(
-        jobsCompleted=12,
-        avgCompletionTimeHrs=4.5,
-        attendancePercent=95.0,
-        otHours=10.0,
-        performanceScore=92,
-        monthlyTrend="up"
+        jobs_completed=12,
+        avg_completion_time_hrs=4.5,
+        attendance_percent=95.0,
+        ot_hours=10.0,
+        performance_score=92,
+        monthly_trend="up"
     )

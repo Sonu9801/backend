@@ -31,9 +31,9 @@ def _get_redis_client():
             client = redis.Redis.from_url(
                 settings.REDIS_URL,
                 decode_responses=True,
-                socket_connect_timeout=2,
-                socket_timeout=2,
-                retry_on_timeout=True,
+                socket_connect_timeout=0.1,
+                socket_timeout=0.1,
+                retry_on_timeout=False,
             )
             client.ping()
             logger.info(f"[SessionStore] Connected to Redis at {settings.REDIS_URL} successfully.")
@@ -45,9 +45,9 @@ def _get_redis_client():
                 client = redis.Redis.from_url(
                     fallback_url,
                     decode_responses=True,
-                    socket_connect_timeout=2,
-                    socket_timeout=2,
-                    retry_on_timeout=True,
+                    socket_connect_timeout=0.1,
+                    socket_timeout=0.1,
+                    retry_on_timeout=False,
                 )
                 client.ping()
                 logger.info(f"[SessionStore] Connected to Redis fallback {fallback_url} successfully.")

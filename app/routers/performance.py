@@ -322,7 +322,7 @@ def get_performance_workers(
                 ComponentTask.workers.any(id=w.id)
             ).all()
             for t in tasks:
-                if t.start_time.date() == target_date:
+                if t.start_time and t.start_time.date() == target_date:
                     today_assignment = t.component_type
                     if t.status == "completed":
                         completed_count += 1
