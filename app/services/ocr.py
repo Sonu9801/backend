@@ -9,7 +9,7 @@ from app.config import settings
 def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
     """
     Process an image or PDF, convert to PIL Image with EXIF orientation correction,
-    and parse required fields using Gemini AI Vision with automatic model fallbacks.
+    and parse required fields using Gemini AI Vision with automatic model fallbacks and multi-angle orientation trial.
     Returns a dictionary of extracted fields.
     """
     try:
@@ -20,10 +20,11 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
         # Configure Gemini
         genai.configure(api_key=settings.GEMINI_API_KEY)
         
-        # Candidate vision models sequence (will attempt in order if rate limit/quota error occurs)
+        # Candidate vision models sequence
         candidate_models = [
             "gemini-flash-latest",
             "gemini-2.5-flash",
+            "gemini-1.5-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
             "gemini-2.5-pro",
@@ -32,8 +33,8 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
         
         if invoice_type == "expense":
             prompt = """
-            Analyze this tax invoice / bill document image carefully and extract the requested fields.
-            NOTE: This document image might be taken from a phone camera and could be oriented sideways, upside down, or vertically (90°, 180°, 270°). Read the text in any orientation.
+            Analyze this tax invoice / purchase bill document image carefully and extract the requested fields.
+            NOTE: This document image might be taken from a phone camera and could be oriented sideways, upside down, or vertically (90°, 180°, 270°). Read text in any orientation.
             
             Return ONLY a valid JSON object matching this structure with no extra text or markdown:
             {
@@ -53,7 +54,7 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
         else:
             prompt = """
             Analyze this sales invoice / dispatch bill document image carefully and extract the requested fields.
-            NOTE: This document image might be taken from a phone camera and could be oriented sideways, upside down, or vertically (90°, 180°, 270°). Read the text in any orientation.
+            NOTE: This document image might be taken from a phone camera and could be oriented sideways, upside down, or vertically (90°, 180°, 270°). Read text in any orientation.
 
             Return ONLY a valid JSON object matching this structure with no extra text or markdown:
             {
@@ -102,46 +103,83 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
             except Exception:
                 raise ValueError("Could not read image file.")
 
-        response = None
-        last_err = None
+        def run_model_extraction(img_obj):
+            for model_name in candidate_models:
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    res = model.generate_content([img_obj, prompt], request_options={"timeout": 15})
+                    if res and res.text:
+                        print(f"[OCR] Successfully extracted using Gemini model '{model_name}'!")
+                        return res.text
+                except Exception as e:
+                    print(f"[OCR WARNING] Model '{model_name}' failed: {e}. Trying next model...")
+            return None
 
-        # Attempt extraction using fallback models sequence
-        for model_name in candidate_models:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content([pil_img, prompt])
-                if response and response.text:
-                    print(f"[OCR] Successfully extracted using Gemini model '{model_name}'!")
-                    break
-            except Exception as e:
-                print(f"[OCR WARNING] Model '{model_name}' failed: {e}. Trying next model...")
-                last_err = e
-
-        if not response or not response.text:
-            raise ValueError(f"All Gemini OCR models failed or hit rate limits. Last error: {last_err}")
+        # Trial 1: Original Image
+        result_text = run_model_extraction(pil_img)
         
-        # Clean up the response text (remove markdown json blocks)
-        result_text = response.text.strip()
-        
-        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', result_text, re.DOTALL)
-        if json_match:
-            result_text = json_match.group(1)
-        else:
-            json_match = re.search(r'\{.*?\}', result_text, re.DOTALL)
+        # Helper to parse & sanitize JSON/Text
+        def parse_and_sanitize(text_in):
+            if not text_in:
+                return {}
+            text_str = text_in.strip()
+            data = {}
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text_str, re.DOTALL)
             if json_match:
-                result_text = json_match.group(0)
-            
-        extracted_data = json.loads(result_text)
-        
-        # Sanitize float fields to prevent Pydantic ValidationError
+                raw_json = json_match.group(1)
+            else:
+                json_match = re.search(r'\{.*?\}', text_str, re.DOTALL)
+                raw_json = json_match.group(0) if json_match else text_str
+
+            try:
+                data = json.loads(raw_json)
+            except Exception:
+                # Regex Fallback Extractor
+                data = {}
+                gstin_m = re.search(r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}\b', text_str, re.IGNORECASE)
+                if gstin_m:
+                    data["vendor_gstin" if invoice_type == "expense" else "customer_gstin"] = gstin_m.group(0).upper()
+                    
+                date_m = re.search(r'\b(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})\b', text_str)
+                if date_m:
+                    d, m, y = date_m.groups()
+                    data["invoice_date"] = f"{y}-{int(m):02d}-{int(d):02d}"
+                    
+                inv_m = re.search(r'(?:Invoice|Bill|Inv)\s*(?:No|Number|#)?[.:\s]*([A-Za-z0-9/-]+)', text_str, re.IGNORECASE)
+                if inv_m:
+                    data["invoice_number"] = inv_m.group(1).strip()
+                    
+                amounts = [float(x.replace(',', '')) for x in re.findall(r'\b\d{1,6}(?:\.\d{2})?\b', text_str) if '.' in x]
+                if amounts:
+                    data["grand_total"] = max(amounts)
+            return data
+
+        extracted_data = parse_and_sanitize(result_text)
+        has_primary = bool(extracted_data.get("invoice_number") or extracted_data.get("vendor_name") or extracted_data.get("customer_name") or extracted_data.get("grand_total"))
+
+        # Trial 2: If Trial 1 yields 0 primary fields, try rotating 90 deg (270 CW)
+        if not has_primary and not file_path.lower().endswith('.pdf'):
+            print("[OCR INFO] Trial 1 yielded empty fields. Attempting 90° image rotation trial...")
+            try:
+                img_rot90 = pil_img.rotate(270, expand=True)
+                result_text2 = run_model_extraction(img_rot90)
+                extracted_data2 = parse_and_sanitize(result_text2)
+                has_primary2 = bool(extracted_data2.get("invoice_number") or extracted_data2.get("vendor_name") or extracted_data2.get("customer_name") or extracted_data2.get("grand_total"))
+                if has_primary2:
+                    extracted_data = extracted_data2
+                    has_primary = True
+            except Exception as rot_err:
+                print("[OCR WARNING] Rotation trial failed:", rot_err)
+
+        # Sanitize float fields
         float_fields = ['cgst', 'sgst', 'igst', 'gst_amount', 'subtotal', 'grand_total']
         for field in float_fields:
-            if extracted_data.get(field) is None or str(extracted_data.get(field)).strip().lower() in ["", "null", "none", "n/a"]:
+            val = extracted_data.get(field)
+            if val is None or str(val).strip().lower() in ["", "null", "none", "n/a"]:
                 extracted_data[field] = 0.0
             else:
                 try:
-                    # Clean currency symbols e.g. ₹ or commas
-                    val_clean = re.sub(r'[^\d.]', '', str(extracted_data[field]))
+                    val_clean = re.sub(r'[^\d.]', '', str(val))
                     extracted_data[field] = float(val_clean) if val_clean else 0.0
                 except (ValueError, TypeError):
                     extracted_data[field] = 0.0
@@ -152,7 +190,6 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
             date_val = extracted_data.get(d_field)
             if date_val:
                 date_str = str(date_val).strip()
-                # If date is DD/MM/YYYY or DD-MM-YYYY, convert to YYYY-MM-DD
                 m_dmy = re.match(r'^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})$', date_str)
                 if m_dmy:
                     day, month, year = m_dmy.groups()
@@ -180,14 +217,18 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
         # Compute calculated confidence based on extracted key fields
         extracted_keys = sum(1 for k, v in extracted_data.items() if v not in [None, 0.0, 0, "", "0.0"])
         total_keys = len(extracted_data)
-        confidence = round(min(98.5, max(85.0, (extracted_keys / max(total_keys, 1)) * 100)), 1)
+        
+        if has_primary:
+            confidence = round(min(98.5, max(85.0, (extracted_keys / max(total_keys, 1)) * 100)), 1)
+        else:
+            confidence = 0.0
+
         extracted_data["ocr_confidence_score"] = confidence
         
         return extracted_data
 
     except Exception as e:
         print(f"Gemini OCR Error: {str(e)}")
-        # Return fallback/empty data on OCR failure so manual entry flow works smoothly
         if invoice_type == "sales":
             return {
                 "invoice_number": None,
