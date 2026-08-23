@@ -35,7 +35,7 @@ def get_vehicles(
     offset = (page - 1) * page_size
     items = query.order_by(Vehicle.id).offset(offset).limit(page_size).all()
     return {
-        "items": [VehicleResponse.model_validate(v).model_dump() for v in items],
+        "items": [VehicleResponse.model_validate(v).model_dump(by_alias=True) for v in items],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -69,7 +69,7 @@ async def create_vehicle(vehicle_in: VehicleCreate, db: Session = Depends(get_db
     db.refresh(vehicle)
     
     # Broadcast change
-    response_data = VehicleResponse.model_validate(vehicle).model_dump()
+    response_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     await manager.broadcast({
         "type": "VEHICLE_CREATED",
         "data": response_data
@@ -112,7 +112,7 @@ async def create_oem_dispatch(vehicle_in: VehicleCreate, db: Session = Depends(g
     db.commit()
     
     # Broadcast change
-    response_data = VehicleResponse.model_validate(vehicle).model_dump()
+    response_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     await manager.broadcast({
         "type": "VEHICLE_CREATED",
         "data": response_data
@@ -138,7 +138,7 @@ async def update_vehicle(vehicle_id: int, vehicle_in: VehicleUpdate, db: Session
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
         
-    old_data = VehicleResponse.model_validate(vehicle).model_dump()
+    old_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     update_data = vehicle_in.model_dump(exclude_unset=True)
     assigned_worker_ids = update_data.pop("assigned_worker_ids", None)
     reason = update_data.pop("reason", "No reason provided")
@@ -153,7 +153,7 @@ async def update_vehicle(vehicle_id: int, vehicle_in: VehicleUpdate, db: Session
     db.commit()
     db.refresh(vehicle)
     
-    new_data = VehicleResponse.model_validate(vehicle).model_dump()
+    new_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     from app.services.audit import log_audit_event
     await log_audit_event(
         db, "vehicle_updated", f"Vehicle {vehicle.tracking_id} updated",
@@ -162,7 +162,7 @@ async def update_vehicle(vehicle_id: int, vehicle_in: VehicleUpdate, db: Session
     )
     
     # Broadcast change
-    response_data = VehicleResponse.model_validate(vehicle).model_dump()
+    response_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     await manager.broadcast({
         "type": "VEHICLE_UPDATED",
         "data": response_data
@@ -185,7 +185,7 @@ async def update_vehicle_stage(
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
         
-    old_data = VehicleResponse.model_validate(vehicle).model_dump()
+    old_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     old_stage = vehicle.current_stage
     vehicle.current_stage = stage
     if priority:
@@ -219,7 +219,7 @@ async def update_vehicle_stage(
     db.commit()
     db.refresh(vehicle)
     
-    new_data = VehicleResponse.model_validate(vehicle).model_dump()
+    new_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     from app.services.audit import log_audit_event
     await log_audit_event(
         db, "vehicle_stage_updated", f"Vehicle {vehicle.tracking_id} stage changed from {old_stage} to {stage}",
@@ -228,7 +228,7 @@ async def update_vehicle_stage(
     )
     
     # Broadcast stage change
-    response_data = VehicleResponse.model_validate(vehicle).model_dump()
+    response_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     await manager.broadcast({
         "type": "VEHICLE_STAGE_CHANGED",
         "data": {
