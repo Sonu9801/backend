@@ -22,12 +22,11 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
         
         # Candidate vision models sequence
         candidate_models = [
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
             "gemini-flash-latest",
             "gemini-2.5-flash",
-            "gemini-1.5-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-2.5-pro",
             "gemini-flash-lite-latest"
         ]
         
@@ -103,11 +102,15 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
             except Exception:
                 raise ValueError("Could not read image file.")
 
+        # Downscale large smartphone photos to max 1800px to avoid memory & payload timeouts
+        if pil_img and max(pil_img.width, pil_img.height) > 1800:
+            pil_img.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+
         def run_model_extraction(img_obj):
             for model_name in candidate_models:
                 try:
                     model = genai.GenerativeModel(model_name)
-                    res = model.generate_content([img_obj, prompt], request_options={"timeout": 15})
+                    res = model.generate_content([img_obj, prompt], request_options={"timeout": 25})
                     if res and res.text:
                         print(f"[OCR] Successfully extracted using Gemini model '{model_name}'!")
                         return res.text

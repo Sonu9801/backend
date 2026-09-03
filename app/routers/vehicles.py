@@ -52,6 +52,21 @@ def get_vehicle(vehicle_id: int, db: Session = Depends(get_db)):
 
 @router.post("", response_model=VehicleResponse, status_code=status.HTTP_201_CREATED)
 async def create_vehicle(vehicle_in: VehicleCreate, db: Session = Depends(get_db)):
+    chassis_to_check = (vehicle_in.chassis_number or vehicle_in.vin or "").strip().lower()
+    if chassis_to_check:
+        from sqlalchemy import func, or_
+        existing_vehicle = db.query(Vehicle).filter(
+            or_(
+                func.lower(func.trim(Vehicle.chassis_number)) == chassis_to_check,
+                func.lower(func.trim(Vehicle.vin)) == chassis_to_check,
+            )
+        ).first()
+        if existing_vehicle:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Vehicle with Chassis/VIN Number '{vehicle_in.chassis_number or vehicle_in.vin}' already exists in the system (Tracking ID: {existing_vehicle.tracking_id}). Duplicate receiving is not allowed."
+            )
+
     # Extract assigned worker IDs
     assigned_worker_ids = vehicle_in.assigned_worker_ids or []
     
@@ -68,6 +83,10 @@ async def create_vehicle(vehicle_in: VehicleCreate, db: Session = Depends(get_db
     db.commit()
     db.refresh(vehicle)
     
+    # Ensure dispatch record if stage is dispatch/dispatched/delivered/rtd
+    from app.services.dispatch_service import ensure_dispatch_record_for_vehicle
+    ensure_dispatch_record_for_vehicle(db, vehicle)
+
     # Broadcast change
     response_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     await manager.broadcast({
@@ -78,6 +97,21 @@ async def create_vehicle(vehicle_in: VehicleCreate, db: Session = Depends(get_db
 
 @router.post("/oem-dispatch", response_model=VehicleResponse, status_code=status.HTTP_201_CREATED)
 async def create_oem_dispatch(vehicle_in: VehicleCreate, db: Session = Depends(get_db)):
+    chassis_to_check = (vehicle_in.chassis_number or vehicle_in.vin or "").strip().lower()
+    if chassis_to_check:
+        from sqlalchemy import func, or_
+        existing_vehicle = db.query(Vehicle).filter(
+            or_(
+                func.lower(func.trim(Vehicle.chassis_number)) == chassis_to_check,
+                func.lower(func.trim(Vehicle.vin)) == chassis_to_check,
+            )
+        ).first()
+        if existing_vehicle:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Vehicle with Chassis/VIN Number '{vehicle_in.chassis_number or vehicle_in.vin}' already exists in the system (Tracking ID: {existing_vehicle.tracking_id}). Duplicate receiving is not allowed."
+            )
+
     # Extract assigned worker IDs
     assigned_worker_ids = vehicle_in.assigned_worker_ids or []
     
@@ -152,6 +186,10 @@ async def update_vehicle(vehicle_id: int, vehicle_in: VehicleUpdate, db: Session
         
     db.commit()
     db.refresh(vehicle)
+
+    # Ensure dispatch record if stage is dispatch/dispatched/delivered/rtd
+    from app.services.dispatch_service import ensure_dispatch_record_for_vehicle
+    ensure_dispatch_record_for_vehicle(db, vehicle)
     
     new_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     from app.services.audit import log_audit_event
@@ -192,32 +230,23 @@ async def update_vehicle_stage(
         vehicle.priority = priority
     if progress is not None:
         vehicle.progress_percent = progress
-    elif stage == "Received":
+    elif stage == "Received" or stage == "received":
         vehicle.progress_percent = 0
-    elif stage == "Fabrication":
+    elif stage == "Fabrication" or stage == "fabrication":
         vehicle.progress_percent = 30
-    elif stage == "Paint":
+    elif stage == "Paint" or stage == "paint":
         vehicle.progress_percent = 65
-    elif stage == "ReadyToDispatch" or stage == "RTD":
+    elif stage.lower() in ["readytodispatch", "rtd"]:
         vehicle.progress_percent = 100
-    elif stage == "Dispatched" or stage == "dispatch":
+    elif stage.lower() in ["dispatched", "dispatch", "delivered"]:
         vehicle.progress_percent = 100
-        from app.models.dispatch import DispatchRecord
-        from datetime import datetime
-        existing_dispatch = db.query(DispatchRecord).filter(DispatchRecord.vehicle_id == vehicle.id).first()
-        if not existing_dispatch:
-            new_dispatch = DispatchRecord(
-                vehicle_id=vehicle.id,
-                scheduled_date=datetime.now(),
-                carrier="Pending Assignment",
-                status="pending",
-                destination="Pending Destination",
-                tracking_number=f"TRK-{vehicle.tracking_id}"
-            )
-            db.add(new_dispatch)
         
     db.commit()
     db.refresh(vehicle)
+
+    # Ensure dispatch record if stage is dispatch/dispatched/delivered/rtd
+    from app.services.dispatch_service import ensure_dispatch_record_for_vehicle
+    ensure_dispatch_record_for_vehicle(db, vehicle)
     
     new_data = VehicleResponse.model_validate(vehicle).model_dump(by_alias=True)
     from app.services.audit import log_audit_event
@@ -239,6 +268,11 @@ async def update_vehicle_stage(
             "vehicle": response_data
         }
     })
+    if stage.lower() in ["dispatched", "dispatch", "delivered", "rtd", "readytodispatch"]:
+        await manager.broadcast({
+            "type": "DISPATCH_RECORD_CREATED",
+            "data": response_data
+        })
     return vehicle
 
 from pydantic import BaseModel

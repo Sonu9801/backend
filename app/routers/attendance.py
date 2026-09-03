@@ -266,6 +266,167 @@ def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = 
         
     return summary
 
+@router.get("/worker/{worker_id}/full-month-logs")
+def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Returns complete day-by-day attendance for a worker for a specific month (1st day to last day of month).
+    Fills empty/unpunched days so every single date in the month is listed with status and details.
+    """
+    import calendar
+    today = datetime.now().date()
+    if month:
+        try:
+            year, m = map(int, month.split("-"))
+            target_date = date(year, m, 1)
+        except Exception:
+            target_date = today.replace(day=1)
+    else:
+        target_date = today.replace(day=1)
+
+    _, last_day = calendar.monthrange(target_date.year, target_date.month)
+    start_date = target_date.replace(day=1)
+    end_date = target_date.replace(day=last_day)
+
+    records = db.query(Attendance).filter(
+        Attendance.worker_id == worker_id,
+        Attendance.date >= start_date,
+        Attendance.date <= end_date
+    ).all()
+
+    record_map = {r.date: r for r in records}
+
+    days_list = []
+    curr = start_date
+    while curr <= end_date:
+        rec = record_map.get(curr)
+        is_sun = curr.weekday() == 6
+        if rec:
+            days_list.append({
+                "id": rec.id,
+                "date": curr.isoformat(),
+                "day_name": curr.strftime("%a"),
+                "status": rec.status or ("Sunday Work" if is_sun and rec.is_sunday else "Present"),
+                "punch_in": to_ist(rec.punch_in).strftime("%H:%M") if rec.punch_in else None,
+                "punch_out": to_ist(rec.punch_out).strftime("%H:%M") if rec.punch_out else None,
+                "punch_in_full": to_ist(rec.punch_in).isoformat() if rec.punch_in else None,
+                "punch_out_full": to_ist(rec.punch_out).isoformat() if rec.punch_out else None,
+                "net_working_hours": rec.net_working_hours or 0.0,
+                "ot_hours": rec.ot_hours or 0.0,
+                "late_minutes": rec.late_minutes or 0,
+                "is_sunday": rec.is_sunday or is_sun,
+                "has_record": True
+            })
+        else:
+            default_status = "Sunday" if is_sun else ("Not Punched" if curr <= today else "Upcoming")
+            days_list.append({
+                "id": None,
+                "date": curr.isoformat(),
+                "day_name": curr.strftime("%a"),
+                "status": default_status,
+                "punch_in": None,
+                "punch_out": None,
+                "punch_in_full": None,
+                "punch_out_full": None,
+                "net_working_hours": 0.0,
+                "ot_hours": 0.0,
+                "late_minutes": 0,
+                "is_sunday": is_sun,
+                "has_record": False
+            })
+        curr += timedelta(days=1)
+
+    return days_list
+
+class MarkDayAttendanceSchema(BaseModel):
+    worker_id: int
+    date: str # "YYYY-MM-DD"
+    status: str # "Present", "Absent", "Half Day", "Leave", "Late", "Sunday Work", "Holiday"
+    punch_in_time: Optional[str] = None # "HH:MM" e.g. "09:30"
+    punch_out_time: Optional[str] = None # "HH:MM" e.g. "18:00"
+    net_working_hours: Optional[float] = 0.0
+    ot_hours: Optional[float] = 0.0
+    is_sunday: Optional[bool] = False
+    reason: Optional[str] = "Manual update by Admin/Manager"
+
+@router.post("/mark-day")
+async def mark_or_update_day_attendance(
+    payload: MarkDayAttendanceSchema,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    if current_user.role not in ["owner", "admin", "manager", "supervisor", "finance_manager"]:
+        raise HTTPException(status_code=403, detail="Not authorized to edit attendance")
+
+    try:
+        date_val = datetime.strptime(payload.date, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    record = db.query(Attendance).filter(
+        Attendance.worker_id == payload.worker_id,
+        Attendance.date == date_val
+    ).first()
+
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    
+    # Parse punch times
+    punch_in_dt = None
+    if payload.punch_in_time and payload.punch_in_time.strip():
+        try:
+            h, m = map(int, payload.punch_in_time.split(":")[:2])
+            punch_in_dt = datetime.combine(date_val, time(h, m)).replace(tzinfo=ist_offset)
+        except Exception:
+            pass
+
+    punch_out_dt = None
+    if payload.punch_out_time and payload.punch_out_time.strip():
+        try:
+            h, m = map(int, payload.punch_out_time.split(":")[:2])
+            punch_out_dt = datetime.combine(date_val, time(h, m)).replace(tzinfo=ist_offset)
+        except Exception:
+            pass
+
+    is_sun = date_val.weekday() == 6 or payload.is_sunday or payload.status == "Sunday Work"
+
+    if not record:
+        record = Attendance(
+            worker_id=payload.worker_id,
+            date=date_val,
+            status=payload.status,
+            punch_in=punch_in_dt,
+            punch_out=punch_out_dt,
+            net_working_hours=payload.net_working_hours or 0.0,
+            ot_hours=payload.ot_hours or 0.0,
+            is_sunday=is_sun
+        )
+        db.add(record)
+    else:
+        record.status = payload.status
+        if punch_in_dt: record.punch_in = punch_in_dt
+        if punch_out_dt: record.punch_out = punch_out_dt
+        if payload.net_working_hours is not None: record.net_working_hours = payload.net_working_hours
+        if payload.ot_hours is not None: record.ot_hours = payload.ot_hours
+        if payload.is_sunday is not None: record.is_sunday = payload.is_sunday
+
+    db.commit()
+    db.refresh(record)
+
+    # Sync Payroll
+    from app.services.attendance_engine import PayrollSyncEngine
+    from app.models.salary_profile import SalaryProfile
+    sp = db.query(SalaryProfile).filter(SalaryProfile.worker_id == payload.worker_id).first()
+    if sp:
+        PayrollSyncEngine.sync_daily_attendance(db, record, sp)
+
+    from app.services.audit import log_audit_event
+    await log_audit_event(
+        db, "attendance_marked_manually", f"Attendance for worker {payload.worker_id} on {payload.date} set to {payload.status}",
+        edited_by=getattr(current_user, "username", "Admin"),
+        reason=payload.reason or "Manual Admin Edit", worker_id=payload.worker_id
+    )
+
+    return {"message": "Attendance marked successfully", "record_id": record.id}
+
 @router.get("/")
 def get_attendance(db: Session = Depends(get_db)):
     return db.query(Attendance).all()

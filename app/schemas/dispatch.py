@@ -24,6 +24,17 @@ class DispatchRecordUpdate(CamelModel):
     status: Optional[str] = None
     carrier: Optional[str] = None
     destination: Optional[str] = None
+    tracking_number: Optional[str] = None
+    scheduled_date: Optional[datetime] = None
+    chassis_number: Optional[str] = None
+    vehicle_number: Optional[str] = None
+    oem_name: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    truck_number: Optional[str] = None
+    lr_number: Optional[str] = None
+    invoice_number: Optional[str] = None
+    dispatch_challan_number: Optional[str] = None
     reason: Optional[str] = None
     delivered_time: Optional[datetime] = None
     receiver_name: Optional[str] = None
@@ -33,3 +44,17 @@ class DispatchRecordUpdate(CamelModel):
 
 class DispatchRecordResponse(DispatchRecordBase):
     id: int
+    vehicle_number: Optional[str] = None
+    chassis_number: Optional[str] = None
+    oem_name: Optional[str] = None
+    vehicle_model: Optional[str] = None
+    product_category: Optional[str] = None
+    vin: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    truck_number: Optional[str] = None
+    lr_number: Optional[str] = None
+    invoice_number: Optional[str] = None
+    dispatch_challan_number: Optional[str] = None
+    tracking_id: Optional[str] = None
+
