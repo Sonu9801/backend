@@ -125,9 +125,11 @@ class TimeEngine:
                 ot_start = max(shift_end, punch_in_local)
                 if punch_out_local > ot_start:
                     ot_seconds = (punch_out_local - ot_start).total_seconds()
-                    if ot_seconds >= (settings.min_ot_minutes * 60):
-                        ot_hrs = round(ot_seconds / 3600.0, 2)
-                        result["ot_hours"] = min(ot_hrs, settings.max_ot_hours)
+                    # Minimum 30 mins (6:30 PM threshold)
+                    min_seconds = (settings.min_ot_minutes or 30) * 60
+                    if ot_seconds >= min_seconds:
+                        ot_hrs = round(ot_seconds / 3600.0, 1)
+                        result["ot_hours"] = min(ot_hrs, float(settings.max_ot_hours or 12))
                     
         return result
 

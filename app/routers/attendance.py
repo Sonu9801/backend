@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, R
 from app.auth import get_current_active_user
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import Optional
-from datetime import datetime, timezone, timedelta
+from typing import Optional, List
+from pydantic import BaseModel
+from datetime import datetime, timezone, timedelta, date, time
 from app.database import get_db
 from app.models.user import User
 from app.models.attendance import Attendance, AttendanceLog, AttendanceException
@@ -198,17 +199,45 @@ def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
     }
 
 @router.get("/worker/{worker_id}/history")
-def get_worker_history(worker_id: int, db: Session = Depends(get_db)):
-    thirty_days_ago = datetime.now().date() - timedelta(days=30)
+def get_worker_history(worker_id: int, month: Optional[str] = None, db: Session = Depends(get_db)):
+    if month:
+        import calendar
+        try:
+            y, m = map(int, month.split("-"))
+            start_d = date(y, m, 1)
+            _, max_d = calendar.monthrange(y, m)
+            end_d = date(y, m, max_d)
+            records = db.query(Attendance).filter(
+                Attendance.worker_id == worker_id,
+                Attendance.date >= start_d,
+                Attendance.date <= end_d
+            ).order_by(Attendance.date.desc()).all()
+            return [
+                {
+                    "id": r.id,
+                    "date": r.date.isoformat() if hasattr(r.date, 'isoformat') else str(r.date),
+                    "status": r.status,
+                    "punch_in": to_ist(r.punch_in).isoformat() if r.punch_in else None,
+                    "punch_out": to_ist(r.punch_out).isoformat() if r.punch_out else None,
+                    "net_working_hours": r.net_working_hours,
+                    "ot_hours": r.ot_hours,
+                    "late_minutes": r.late_minutes
+                }
+                for r in records
+            ]
+        except Exception:
+            pass
+
+    ninety_days_ago = datetime.now().date() - timedelta(days=90)
     records = db.query(Attendance).filter(
         Attendance.worker_id == worker_id,
-        Attendance.date >= thirty_days_ago
+        Attendance.date >= ninety_days_ago
     ).order_by(Attendance.date.desc()).all()
     
     return [
         {
             "id": r.id,
-            "date": r.date.isoformat(),
+            "date": r.date.isoformat() if hasattr(r.date, 'isoformat') else str(r.date),
             "status": r.status,
             "punch_in": to_ist(r.punch_in).isoformat() if r.punch_in else None,
             "punch_out": to_ist(r.punch_out).isoformat() if r.punch_out else None,
@@ -260,6 +289,9 @@ def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = 
         if r.net_working_hours: summary["working_hours"] += r.net_working_hours
         if r.is_sunday: summary["sunday_work"] += 1
         
+    summary["ot_hours"] = round(summary["ot_hours"], 1)
+    summary["working_hours"] = round(summary["working_hours"], 1)
+
     total_working_days = summary["present_days"] + summary["absent_days"] + summary["half_days"] + summary["leave_days"]
     if total_working_days > 0:
         summary["net_attendance_percent"] = round((summary["present_days"] + (summary["half_days"] * 0.5)) / total_working_days * 100, 1)
@@ -301,19 +333,21 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
         rec = record_map.get(curr)
         is_sun = curr.weekday() == 6
         if rec:
+            is_non_working = rec.status in ["Absent", "Leave", "Holiday", "Not Punched", "Sunday"]
             days_list.append({
                 "id": rec.id,
                 "date": curr.isoformat(),
                 "day_name": curr.strftime("%a"),
-                "status": rec.status or ("Sunday Work" if is_sun and rec.is_sunday else "Present"),
-                "punch_in": to_ist(rec.punch_in).strftime("%H:%M") if rec.punch_in else None,
-                "punch_out": to_ist(rec.punch_out).strftime("%H:%M") if rec.punch_out else None,
-                "punch_in_full": to_ist(rec.punch_in).isoformat() if rec.punch_in else None,
-                "punch_out_full": to_ist(rec.punch_out).isoformat() if rec.punch_out else None,
-                "net_working_hours": rec.net_working_hours or 0.0,
-                "ot_hours": rec.ot_hours or 0.0,
+                "status": rec.status or ("Sunday Work" if rec.is_sunday else ("Sunday" if is_sun else "Present")),
+                "punch_in": None if is_non_working else (to_ist(rec.punch_in).strftime("%I:%M %p") if rec.punch_in else None),
+                "punch_out": None if is_non_working else (to_ist(rec.punch_out).strftime("%I:%M %p") if rec.punch_out else None),
+                "punch_in_full": None if is_non_working else (to_ist(rec.punch_in).isoformat() if rec.punch_in else None),
+                "punch_out_full": None if is_non_working else (to_ist(rec.punch_out).isoformat() if rec.punch_out else None),
+                "net_working_hours": 0.0 if is_non_working else (rec.net_working_hours or 0.0),
+                "ot_hours": 0.0 if is_non_working else (rec.ot_hours or 0.0),
                 "late_minutes": rec.late_minutes or 0,
-                "is_sunday": rec.is_sunday or is_sun,
+                "is_sunday": bool(rec.is_sunday),
+                "is_calendar_sunday": is_sun,
                 "has_record": True
             })
         else:
@@ -330,7 +364,8 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
                 "net_working_hours": 0.0,
                 "ot_hours": 0.0,
                 "late_minutes": 0,
-                "is_sunday": is_sun,
+                "is_sunday": False,
+                "is_calendar_sunday": is_sun,
                 "has_record": False
             })
         curr += timedelta(days=1)
@@ -367,26 +402,54 @@ async def mark_or_update_day_attendance(
         Attendance.date == date_val
     ).first()
 
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
-    
-    # Parse punch times
+    # Parse punch times (naive datetime for local storage)
     punch_in_dt = None
     if payload.punch_in_time and payload.punch_in_time.strip():
         try:
-            h, m = map(int, payload.punch_in_time.split(":")[:2])
-            punch_in_dt = datetime.combine(date_val, time(h, m)).replace(tzinfo=ist_offset)
+            time_str = payload.punch_in_time.strip()
+            if "AM" in time_str.upper() or "PM" in time_str.upper():
+                dt_obj = datetime.strptime(time_str.upper(), "%I:%M %p").time()
+            else:
+                h, m = map(int, time_str.split(":")[:2])
+                dt_obj = time(h, m)
+            punch_in_dt = datetime.combine(date_val, dt_obj)
         except Exception:
             pass
 
     punch_out_dt = None
     if payload.punch_out_time and payload.punch_out_time.strip():
         try:
-            h, m = map(int, payload.punch_out_time.split(":")[:2])
-            punch_out_dt = datetime.combine(date_val, time(h, m)).replace(tzinfo=ist_offset)
+            time_str = payload.punch_out_time.strip()
+            if "AM" in time_str.upper() or "PM" in time_str.upper():
+                dt_obj = datetime.strptime(time_str.upper(), "%I:%M %p").time()
+            else:
+                h, m = map(int, time_str.split(":")[:2])
+                dt_obj = time(h, m)
+            punch_out_dt = datetime.combine(date_val, dt_obj)
         except Exception:
             pass
 
-    is_sun = date_val.weekday() == 6 or payload.is_sunday or payload.status == "Sunday Work"
+    is_non_working = payload.status in ["Absent", "Leave", "Holiday", "Not Punched", "Sunday"]
+
+    if is_non_working:
+        punch_in_dt = None
+        punch_out_dt = None
+        working_to_save = 0.0
+        ot_to_save = 0.0
+    else:
+        # Auto-calculate OT ONLY if punch_out is at or after 18:30 (6:30 PM threshold)
+        calculated_ot = 0.0
+        if punch_in_dt and punch_out_dt:
+            min_ot_start_dt = datetime.combine(date_val, time(18, 30))
+            shift_end_dt = datetime.combine(date_val, time(18, 0))
+            if punch_out_dt >= min_ot_start_dt:
+                ot_seconds = (punch_out_dt - shift_end_dt).total_seconds()
+                calculated_ot = round(ot_seconds / 3600.0, 1)
+
+        ot_to_save = payload.ot_hours if (payload.ot_hours and payload.ot_hours > 0) else calculated_ot
+        working_to_save = payload.net_working_hours if (payload.net_working_hours and payload.net_working_hours > 0) else 8.0
+
+    is_sun = bool(payload.is_sunday or payload.status == "Sunday Work")
 
     if not record:
         record = Attendance(
@@ -395,17 +458,17 @@ async def mark_or_update_day_attendance(
             status=payload.status,
             punch_in=punch_in_dt,
             punch_out=punch_out_dt,
-            net_working_hours=payload.net_working_hours or 0.0,
-            ot_hours=payload.ot_hours or 0.0,
+            net_working_hours=working_to_save,
+            ot_hours=ot_to_save,
             is_sunday=is_sun
         )
         db.add(record)
     else:
         record.status = payload.status
-        if punch_in_dt: record.punch_in = punch_in_dt
-        if punch_out_dt: record.punch_out = punch_out_dt
-        if payload.net_working_hours is not None: record.net_working_hours = payload.net_working_hours
-        if payload.ot_hours is not None: record.ot_hours = payload.ot_hours
+        record.punch_in = punch_in_dt
+        record.punch_out = punch_out_dt
+        record.net_working_hours = working_to_save
+        record.ot_hours = ot_to_save
         if payload.is_sunday is not None: record.is_sunday = payload.is_sunday
 
     db.commit()
@@ -424,6 +487,39 @@ async def mark_or_update_day_attendance(
         edited_by=getattr(current_user, "username", "Admin"),
         reason=payload.reason or "Manual Admin Edit", worker_id=payload.worker_id
     )
+
+    # Send Notification to Worker
+    try:
+        from app.models.notification import Notification
+        notif = Notification(
+            user_id=payload.worker_id,
+            title="Attendance Record Updated",
+            message=f"Your attendance for {payload.date} has been updated to '{payload.status}' by {getattr(current_user, 'name', 'Admin')}.",
+            module="attendance",
+            target_url="/attendance",
+            is_read=False
+        )
+        db.add(notif)
+        db.commit()
+    except Exception as n_err:
+        print(f"[Notif Warning] Could not send attendance notification: {n_err}")
+
+    # Broadcast WebSocket event to live update PWA app
+    try:
+        await manager.broadcast({
+            "type": "ATTENDANCE_UPDATE",
+            "payload": {
+                "worker_id": payload.worker_id,
+                "date": payload.date,
+                "status": payload.status
+            }
+        })
+        await manager.broadcast({
+            "type": "NEW_NOTIFICATION",
+            "payload": {"user_id": payload.worker_id}
+        })
+    except Exception as ws_err:
+        print(f"[WebSocket Warning] Failed to broadcast attendance update: {ws_err}")
 
     return {"message": "Attendance marked successfully", "record_id": record.id}
 

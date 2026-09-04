@@ -47,7 +47,7 @@ def get_dashboard_stats(
 
     absent_days = float(len([r for r in records if r.status == "Absent"]))
     leave_days = float(len([r for r in records if r.status == "Leave"]))
-    ot_hours = float(sum(r.ot_hours for r in records if r.ot_hours))
+    ot_hours = round(float(sum(r.ot_hours for r in records if r.ot_hours)), 1)
     
     sunday_worked = len([r for r in records if r.is_sunday and r.status in ["Present", "Late", "Sunday Work"]])
 
@@ -92,9 +92,9 @@ def get_dashboard_stats(
             p_out = today_record.punch_out.replace(tzinfo=ist_offset) if today_record.punch_out.tzinfo is None else today_record.punch_out.astimezone(ist_offset)
             today_punch_out = p_out.strftime("%I:%M %p")
         if today_record.net_working_hours is not None:
-            today_working_hours = f"{today_record.net_working_hours:.2f} hrs"
+            today_working_hours = f"{today_record.net_working_hours:.1f} hrs"
         if today_record.ot_hours is not None:
-            today_ot_hours = f"{today_record.ot_hours:.2f} hrs"
+            today_ot_hours = f"{today_record.ot_hours:.1f} hrs"
 
     return WorkerDashboardStats(
         present_days=present_days,
