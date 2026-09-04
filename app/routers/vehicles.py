@@ -295,7 +295,7 @@ class VerifyPayload(BaseModel):
 
 @router.post("/{vehicle_id}/verify", response_model=VehicleResponse)
 async def verify_vehicle(vehicle_id: int, payload: VerifyPayload, db: Session = Depends(get_db), current_user = Depends(get_current_active_user)):
-    if current_user.role not in ["supervisor", "manager", "admin", "owner"]:
+    if current_user.role not in ["supervisor", "manager", "admin", "owner", "dispatcher", "dispatch"]:
         raise HTTPException(status_code=403, detail="Not authorized to verify vehicles")
         
     vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
