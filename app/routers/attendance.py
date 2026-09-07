@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta, date, time
 from app.database import get_db
 from app.models.user import User
 from app.models.attendance import Attendance, AttendanceLog, AttendanceException
+from app.models.holiday import Holiday
 from app.models.attendance_settings import AttendanceSettings
 from app.models.salary_profile import SalaryProfile
 from app.services.websocket_manager import manager
@@ -327,18 +328,31 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
 
     record_map = {r.date: r for r in records}
 
+    holidays_db = db.query(Holiday).filter(
+        Holiday.date >= start_date,
+        Holiday.date <= end_date
+    ).all()
+    holiday_map = {h.date: h.name for h in holidays_db}
+
     days_list = []
     curr = start_date
     while curr <= end_date:
         rec = record_map.get(curr)
         is_sun = curr.weekday() == 6
+        holiday_name = holiday_map.get(curr)
+
         if rec:
             is_non_working = rec.status in ["Absent", "Leave", "Holiday", "Not Punched", "Sunday"]
+            status_val = rec.status or ("Sunday Work" if rec.is_sunday else ("Holiday" if is_sun else "Present"))
+            if holiday_name and rec.status not in ["Present", "Half Day", "Sunday Work"]:
+                status_val = f"Holiday: {holiday_name}"
+
             days_list.append({
                 "id": rec.id,
                 "date": curr.isoformat(),
                 "day_name": curr.strftime("%a"),
-                "status": rec.status or ("Sunday Work" if rec.is_sunday else ("Sunday" if is_sun else "Present")),
+                "status": status_val,
+                "holiday_name": holiday_name,
                 "punch_in": None if is_non_working else (to_ist(rec.punch_in).strftime("%I:%M %p") if rec.punch_in else None),
                 "punch_out": None if is_non_working else (to_ist(rec.punch_out).strftime("%I:%M %p") if rec.punch_out else None),
                 "punch_in_full": None if is_non_working else (to_ist(rec.punch_in).isoformat() if rec.punch_in else None),
@@ -351,12 +365,18 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
                 "has_record": True
             })
         else:
-            default_status = "Sunday" if is_sun else ("Not Punched" if curr <= today else "Upcoming")
+            if holiday_name:
+                default_status = f"Holiday: {holiday_name}"
+            elif is_sun:
+                default_status = "Holiday"
+            else:
+                default_status = "Not Punched" if curr <= today else "Upcoming"
             days_list.append({
                 "id": None,
                 "date": curr.isoformat(),
                 "day_name": curr.strftime("%a"),
                 "status": default_status,
+                "holiday_name": holiday_name,
                 "punch_in": None,
                 "punch_out": None,
                 "punch_in_full": None,

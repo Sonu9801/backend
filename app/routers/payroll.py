@@ -7,8 +7,9 @@ from app.database import get_db
 from app.models.user import User
 from app.models.attendance import AttendanceLog, Attendance
 from app.models.salary_profile import SalaryProfile
+from app.models.holiday import Holiday
 from app.models.payroll import AdvanceRequest, PayrollRecord
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import calendar
 
 router = APIRouter(prefix="/payroll", tags=["payroll"], dependencies=[Depends(get_current_active_user)])
@@ -84,6 +85,9 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
     # Aggregate stats per worker
     worker_stats = {}
     
+    holidays_db = db.query(Holiday).all()
+    holiday_dates = {h.date for h in holidays_db}
+
     for log in logs:
         wid = log.worker_id
         if wid not in worker_stats:
@@ -99,15 +103,15 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
         worker_stats[wid]["ot_hours"] += (log.ot_hours or 0.0)
         try:
             if isinstance(log.date, str):
-                log_date = datetime.strptime(log.date, "%Y-%m-%d").date()
+                log_date = datetime.strptime(str(log.date)[:10], "%Y-%m-%d").date()
             else:
                 log_date = log.date
             
-            # Since Attendance doesn't have working_hours, we add 8 for a full present sunday, or check if is_sunday is true
-            if log_date.weekday() == 6 and log.status == "Present":
-                worker_stats[wid]["sunday_hours"] += 8.0
-            elif log_date.weekday() == 6 and log.status == "Half Day":
-                worker_stats[wid]["sunday_hours"] += 4.0
+            is_hol = log_date in holiday_dates
+            is_sun = (log_date.weekday() == 6)
+            if (is_sun or is_hol) and (log.status in ["Present", "Half Day", "Sunday Work", "Holiday Work"] or (log.net_working_hours or 0) > 0):
+                hrs = log.net_working_hours if (log.net_working_hours and log.net_working_hours > 0) else (8.0 if log.status == "Present" else 4.0)
+                worker_stats[wid]["sunday_hours"] += hrs
         except Exception as e:
             print(e)
 
@@ -118,8 +122,13 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
         if not sp or not w:
             continue
             
-        ot_amount = stats["ot_hours"] * (sp.ot_rate_per_hour or 0.0)
-        sunday_amount = stats["sunday_hours"] * (sp.sunday_rate_per_hour or 0.0)
+        sp_base = sp.monthly_salary or 20000.0
+        calculated_ot_rate = (sp_base / 30.0) / 7.0
+        ot_rate = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calculated_ot_rate
+        sunday_rate = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else (calculated_ot_rate * 2.0)
+
+        ot_amount = stats["ot_hours"] * ot_rate
+        sunday_amount = stats["sunday_hours"] * sunday_rate
         
         base = 0.0
         if sp.salary_type == "Monthly":
@@ -181,8 +190,10 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
 
-    start_date = f"{year}-{month_num:02d}-01"
     _, last_day = calendar.monthrange(year, month_num)
+    start_date_val = date(year, month_num, 1)
+    end_date_val = date(year, month_num, last_day)
+    start_date = f"{year}-{month_num:02d}-01"
     end_date = f"{year}-{month_num:02d}-{last_day}"
     
     workers = db.query(User).filter(User.employee_id.isnot(None), User.employment_status == "Active").all()
@@ -228,65 +239,96 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
         else:
             base_salary = active_monthly_salary
 
-        daily_rate = base_salary / last_day
-        hourly_rate = daily_rate / 8.0
+        daily_rate = base_salary / 30.0
+        hourly_rate = daily_rate / 7.0
         sunday_hourly_rate = hourly_rate * 2.0
-        
-        present = sum(1 for l in w_logs if (l.status or "").lower() == "present")
-        half = sum(1 for l in w_logs if (l.status or "").lower() == "half day")
-        absent = sum(1 for l in w_logs if (l.status or "").lower() == "absent")
-        ot_hrs = sum(l.ot_hours or 0.0 for l in w_logs)
-        
-        sunday_hrs = 0.0
-        ot_amount = 0.0
-        sunday_amount = 0.0
-        regular_earned = 0.0
-        
+
+        holidays_db = db.query(Holiday).filter(
+            Holiday.date >= start_date,
+            Holiday.date <= end_date
+        ).all()
+        holiday_dates = {h.date for h in holidays_db}
+
+        log_map = {}
         for l in w_logs:
-            s = (l.status or "").lower()
-            is_sun = False
             try:
-                if isinstance(l.date, str):
-                    dt = datetime.strptime(l.date, "%Y-%m-%d").date()
-                else:
-                    dt = l.date
-                if dt.weekday() == 6:
-                    is_sun = True
+                dt = l.date if not isinstance(l.date, str) else datetime.strptime(str(l.date)[:10], "%Y-%m-%d").date()
+                log_map[dt] = l
             except Exception:
-                is_sun = bool(l.is_sunday)
-                
-            worked_h = l.net_working_hours or 0.0
-            ot_h = l.ot_hours or 0.0
-            reg_h = max(0.0, worked_h - ot_h)
-            
-            if is_sun and (s in ["present", "half day"] or worked_h > 0):
-                sunday_hrs += worked_h
-                sunday_amount += worked_h * sunday_hourly_rate
-            else:
-                regular_earned += reg_h * hourly_rate
+                pass
+
+        present = 0.0; half = 0.0; absent = 0.0
+        leave_count = 0.0; holiday_count = 0.0; sunday_count = 0.0
+        sunday_hrs = 0.0; ot_hrs = 0.0
+        ot_amount = 0.0; sunday_amount = 0.0
+
+        curr_d = start_date_val
+        while curr_d <= end_date_val:
+            is_sun = (curr_d.weekday() == 6)
+            is_hol = (curr_d in holiday_dates)
+            l = log_map.get(curr_d)
+
+            if l:
+                s = (l.status or "").lower()
+                worked_h = l.net_working_hours or 0.0
+                ot_h = l.ot_hours or 0.0
+                ot_hrs += ot_h
+
+                if (is_sun or is_hol) and (s in ["present", "half day", "sunday work", "holiday work"] or worked_h > 0):
+                    sunday_hrs += worked_h
+                    sunday_amount += worked_h * sunday_hourly_rate
+                    if s == "half day": half += 0.5
+                    else: present += 1.0
+                else:
+                    if s == "present": present += 1.0
+                    elif s == "absent": absent += 1.0
+                    elif s == "half day": half += 1.0
+                    elif "leave" in s: leave_count += 1.0
+                    elif "holiday" in s: holiday_count += 1.0
+                    elif is_sun or s == "sunday": sunday_count += 1.0
+                    elif curr_d <= date.today(): absent += 1.0
+
                 ot_amount += ot_h * hourly_rate
-                
+            else:
+                if is_hol:
+                    holiday_count += 1.0
+                elif is_sun:
+                    sunday_count += 1.0
+                elif curr_d <= date.today():
+                    absent += 1.0
+
+            curr_d += timedelta(days=1)
+
+        paid_days = present + (half * 0.5) + leave_count + holiday_count + sunday_count
+        absent_days = max(0.0, last_day - paid_days)
+        effective_paid_days = max(0.0, 30.0 - absent_days)
+        earned_base_salary = round(daily_rate * effective_paid_days, 2)
+
         bonus_amount = 0.0
         deductions = advances_by_worker.get(w.id, 0.0)
-        
+
         # Override / Sync with DB record
         if pr:
             if (pr.status or "").lower() not in ["approved", "paid"]:
                 pr.base_salary = base_salary
-            ot_amount = pr.ot_amount if (pr.ot_amount is not None and pr.ot_amount > 0) else ot_amount
-            sunday_amount = pr.sunday_amount if (pr.sunday_amount is not None and pr.sunday_amount > 0) else sunday_amount
+                pr.ot_amount = ot_amount
+                pr.sunday_amount = sunday_amount
+            else:
+                ot_amount = pr.ot_amount if pr.ot_amount is not None else ot_amount
+                sunday_amount = pr.sunday_amount if pr.sunday_amount is not None else sunday_amount
+
             bonus_amount = pr.bonus_amount or 0.0
             deductions = pr.deductions if pr.deductions is not None else deductions
             status = pr.status or "Draft"
-            total_salary = regular_earned + ot_amount + sunday_amount
-            final_salary = total_salary + bonus_amount - deductions
+            total_salary = round(earned_base_salary + ot_amount + sunday_amount, 2)
+            final_salary = round(total_salary + bonus_amount - deductions, 2)
             if (pr.status or "").lower() not in ["approved", "paid"]:
                 pr.final_salary = final_salary
                 db.add(pr)
         else:
             status = "Draft"
-            total_salary = regular_earned + ot_amount + sunday_amount
-            final_salary = total_salary + bonus_amount - deductions
+            total_salary = round(earned_base_salary + ot_amount + sunday_amount, 2)
+            final_salary = round(total_salary + bonus_amount - deductions, 2)
         
         results.append({
             "id": w.id,
@@ -511,8 +553,13 @@ def get_payroll_full_analytics(db: Session = Depends(get_db)):
             if not sp or not w:
                 continue
                 
-            w_ot = stats["ot_hrs"] * (sp.ot_rate_per_hour or 0.0)
-            w_sun = stats["sunday_hrs"] * (sp.sunday_rate_per_hour or 0.0)
+            sp_base = sp.monthly_salary or 20000.0
+            calc_ot_rate = (sp_base / 30.0) / 7.0
+            ot_r = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calc_ot_rate
+            sun_r = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else (calc_ot_rate * 2.0)
+
+            w_ot = stats["ot_hrs"] * ot_r
+            w_sun = stats["sunday_hrs"] * sun_r
             
             w_base = 0.0
             if sp.salary_type == "Monthly":
