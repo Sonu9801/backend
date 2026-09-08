@@ -562,8 +562,8 @@ def get_detailed_logs(
     from sqlalchemy import or_, and_
     from datetime import date as date_type
     query = db.query(Attendance).join(User, Attendance.worker_id == User.id)
-    if user.role == "supervisor":
-        query = query.filter(User.department == user.department)
+    if getattr(user, "role", None) == "supervisor":
+        query = query.filter(User.department == getattr(user, "department", None))
 
     if search:
         query = query.filter(
@@ -585,14 +585,41 @@ def get_detailed_logs(
     total = query.count()
     total_pages = max(1, -(-total // page_size))
     offset = (page - 1) * page_size
-    records = query.order_by(Attendance.date.desc()).offset(offset).limit(page_size).all()
+    records = query.order_by(Attendance.date.desc(), Attendance.id.desc()).offset(offset).limit(page_size).all()
+
+    # Bulk fetch logs to avoid N+1 query problem
+    worker_ids = list({r.worker_id for r in records if r.worker_id})
+    min_date = min([r.date for r in records if r.date] + [date_type.max])
+    max_date = max([r.date for r in records if r.date] + [date_type.min])
+
+    logs_by_worker = {}
+    if worker_ids and min_date != date_type.max:
+        from datetime import datetime, timedelta
+        start_ts = datetime.combine(min_date, datetime.min.time()) - timedelta(days=1)
+        end_ts = datetime.combine(max_date, datetime.max.time()) + timedelta(days=1)
+        
+        all_logs = db.query(AttendanceLog).filter(
+            AttendanceLog.worker_id.in_(worker_ids),
+            AttendanceLog.timestamp >= start_ts,
+            AttendanceLog.timestamp <= end_ts
+        ).all()
+        
+        for lg in all_logs:
+            if lg.worker_id not in logs_by_worker:
+                logs_by_worker[lg.worker_id] = []
+            logs_by_worker[lg.worker_id].append(lg)
+            
+        # Sort logs by timestamp for accurate first() lookup
+        for wid in logs_by_worker:
+            logs_by_worker[wid].sort(key=lambda x: x.timestamp)
 
     results = []
     for r in records:
         worker = r.worker
         if worker:
-            in_log = db.query(AttendanceLog).filter(AttendanceLog.worker_id == worker.id, AttendanceLog.action == "Punch In", AttendanceLog.timestamp >= r.punch_in).first() if r.punch_in else None
-            out_log = db.query(AttendanceLog).filter(AttendanceLog.worker_id == worker.id, AttendanceLog.action == "Punch Out", AttendanceLog.timestamp >= r.punch_out).first() if r.punch_out else None
+            w_logs = logs_by_worker.get(worker.id, [])
+            in_log = next((lg for lg in w_logs if lg.action == "Punch In" and lg.timestamp >= r.punch_in), None) if r.punch_in else None
+            out_log = next((lg for lg in w_logs if lg.action == "Punch Out" and lg.timestamp >= r.punch_out), None) if r.punch_out else None
 
             results.append({
                 "id": r.id,
@@ -790,9 +817,9 @@ def get_analytics(
     query_workers = db.query(User).filter(User.employee_id.isnot(None))
     query_today = db.query(Attendance).filter(Attendance.date == today)
     
-    if user.role == "supervisor":
-        query_workers = query_workers.filter(User.department == user.department)
-        query_today = query_today.join(User).filter(User.department == user.department)
+    if getattr(user, "role", None) == "supervisor":
+        query_workers = query_workers.filter(User.department == getattr(user, "department", None))
+        query_today = query_today.join(User).filter(User.department == getattr(user, "department", None))
 
     all_workers = query_workers.all()
     total_workers = len(all_workers)
@@ -853,8 +880,8 @@ def get_analytics(
     for i in range(6, -1, -1):
         d = today - timedelta(days=i)
         day_records = db.query(Attendance).filter(Attendance.date == d)
-        if user.role == "supervisor":
-            day_records = day_records.join(User).filter(User.department == user.department)
+        if getattr(user, "role", None) == "supervisor":
+            day_records = day_records.join(User).filter(User.department == getattr(user, "department", None))
         
         day_present = 0
         day_late = 0

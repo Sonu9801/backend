@@ -6,7 +6,7 @@ from app.database import get_db
 from app.auth import get_current_user, get_current_active_user
 from app.models.component_task import ComponentTask
 from app.models.user import User
-from app.schemas.component_task import ComponentTaskCreate, ComponentTaskResponse, ComponentTaskSubmit
+from app.schemas.component_task import ComponentTaskCreate, ComponentTaskResponse, ComponentTaskSubmit, ComponentTaskUpdate
 
 router = APIRouter(prefix="/components", tags=["components"], dependencies=[Depends(get_current_user)])
 
@@ -29,6 +29,14 @@ def start_component_task(task_in: ComponentTaskCreate, db: Session = Depends(get
             raise HTTPException(status_code=400, detail="Maximum 2 workers allowed for a Platform task.")
             
         task.workers.append(current_user)
+        
+        # Handle partner
+        partner_id = getattr(task_in, 'partner_id', None)
+        if partner_id:
+            partner = db.query(User).filter(User.id == partner_id).first()
+            if partner and partner not in task.workers:
+                task.workers.append(partner)
+                
         db.commit()
         db.refresh(task)
         return task
@@ -39,10 +47,42 @@ def start_component_task(task_in: ComponentTaskCreate, db: Session = Depends(get
             component_number=task_in.component_number,
         )
         new_task.workers.append(current_user)
+        
+        # Handle partner
+        partner_id = getattr(task_in, 'partner_id', None)
+        if partner_id:
+            partner = db.query(User).filter(User.id == partner_id).first()
+            if partner and partner not in new_task.workers:
+                new_task.workers.append(partner)
+
         db.add(new_task)
+        db.commit()
         db.commit()
         db.refresh(new_task)
         return new_task
+
+@router.put("/{task_id}", response_model=ComponentTaskResponse)
+def update_component_task(task_id: int, task_in: ComponentTaskUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    task = db.query(ComponentTask).filter(ComponentTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    if current_user not in task.workers:
+        raise HTTPException(status_code=403, detail="You are not assigned to this task")
+        
+    if task_in.component_type is not None:
+        task.component_type = task_in.component_type
+    if task_in.component_number is not None:
+        task.component_number = task_in.component_number
+        
+    if getattr(task_in, 'partner_id', None) is not None:
+        partner = db.query(User).filter(User.id == task_in.partner_id).first()
+        if partner and partner not in task.workers:
+            task.workers = [current_user, partner]
+            
+    db.commit()
+    db.refresh(task)
+    return task
 
 @router.post("/{task_id}/submit", response_model=ComponentTaskResponse)
 def submit_component_task(task_id: int, submit_in: ComponentTaskSubmit, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

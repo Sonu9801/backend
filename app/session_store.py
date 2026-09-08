@@ -26,6 +26,7 @@ def _get_redis_client():
     """Try to connect to Redis. Returns None if unavailable."""
     try:
         import redis
+        import socket
         from app.config import settings
         try:
             client = redis.Redis.from_url(
@@ -38,23 +39,26 @@ def _get_redis_client():
             client.ping()
             logger.info(f"[SessionStore] Connected to Redis at {settings.REDIS_URL} successfully.")
             return client
-        except (redis.ConnectionError, redis.TimeoutError) as e:
+        except (redis.ConnectionError, redis.TimeoutError, socket.gaierror, OSError) as e:
             if "redis:6379" in settings.REDIS_URL:
                 fallback_url = settings.REDIS_URL.replace("redis:6379", "localhost:6379")
-                logger.info(f"[SessionStore] Failed to connect to {settings.REDIS_URL}, trying fallback {fallback_url}...")
-                client = redis.Redis.from_url(
-                    fallback_url,
-                    decode_responses=True,
-                    socket_connect_timeout=0.1,
-                    socket_timeout=0.1,
-                    retry_on_timeout=False,
-                )
-                client.ping()
-                logger.info(f"[SessionStore] Connected to Redis fallback {fallback_url} successfully.")
-                return client
-            raise e
-    except Exception as e:
-        logger.warning(f"[SessionStore] Redis unavailable ({e}). Falling back to in-memory sessions.")
+                try:
+                    client = redis.Redis.from_url(
+                        fallback_url,
+                        decode_responses=True,
+                        socket_connect_timeout=0.1,
+                        socket_timeout=0.1,
+                        retry_on_timeout=False,
+                    )
+                    client.ping()
+                    logger.info(f"[SessionStore] Connected to Redis fallback {fallback_url} successfully.")
+                    return client
+                except Exception:
+                    pass
+            logger.warning(f"[SessionStore] Redis unavailable ({e}). Falling back to in-memory sessions.")
+            return None
+    except Exception as exc:
+        logger.warning(f"[SessionStore] Redis initialization failed ({exc}). Falling back to in-memory sessions.")
         return None
 
 

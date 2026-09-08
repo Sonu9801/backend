@@ -123,7 +123,7 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
             continue
             
         sp_base = sp.monthly_salary or 20000.0
-        calculated_ot_rate = (sp_base / 30.0) / 7.0
+        calculated_ot_rate = (sp_base / 30.0) / 8.0
         ot_rate = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calculated_ot_rate
         sunday_rate = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else (calculated_ot_rate * 2.0)
 
@@ -240,7 +240,7 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
             base_salary = active_monthly_salary
 
         daily_rate = base_salary / 30.0
-        hourly_rate = daily_rate / 7.0
+        hourly_rate = daily_rate / 8.0
         sunday_hourly_rate = hourly_rate * 2.0
 
         holidays_db = db.query(Holiday).filter(
@@ -554,7 +554,7 @@ def get_payroll_full_analytics(db: Session = Depends(get_db)):
                 continue
                 
             sp_base = sp.monthly_salary or 20000.0
-            calc_ot_rate = (sp_base / 30.0) / 7.0
+            calc_ot_rate = (sp_base / 30.0) / 8.0
             ot_r = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calc_ot_rate
             sun_r = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else (calc_ot_rate * 2.0)
 

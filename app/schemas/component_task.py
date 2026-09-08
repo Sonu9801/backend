@@ -8,7 +8,12 @@ class ComponentTaskBase(BaseModel):
     component_number: str
 
 class ComponentTaskCreate(ComponentTaskBase):
-    pass
+    partner_id: Optional[int] = None
+
+class ComponentTaskUpdate(BaseModel):
+    component_type: Optional[str] = None
+    component_number: Optional[str] = None
+    partner_id: Optional[int] = None
 
 class ComponentTaskSubmit(BaseModel):
     photo_proof_url: str
