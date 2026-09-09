@@ -77,6 +77,15 @@ app.include_router(components.router, prefix="/api")
 app.include_router(performance.router, prefix="/api")
 app.include_router(websocket.router, prefix="")
 
+@app.get("/")
+def root():
+    return {
+        "message": "FOXFLOW ERP API is running",
+        "docs": "/docs",
+        "health": "/api/health"
+    }
+
+
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "message": "FOXFLOW ERP API is healthy"}

@@ -11,13 +11,13 @@ class AttendanceSettings(Base):
     longitude = Column(Float, default=77.297224)
     geofence_radius = Column(Integer, default=10000)
 
-    default_shift_start = Column(String, default='09:30:00')
-    default_shift_end = Column(String, default='18:00:00')
+    default_shift_start = Column(String, default='09:00:00')
+    default_shift_end = Column(String, default='17:30:00')
     present_window_end = Column(String, default='11:00:00')
     half_day_start = Column(String, default='13:00:00')
 
     enable_ot = Column(Boolean, default=True)
-    ot_start_time = Column(String, default='18:30:00')
+    ot_start_time = Column(String, default='18:00:00')
     ot_rate_multiplier = Column(Float, default=1.5)
     min_ot_minutes = Column(Integer, default=30)
     max_ot_hours = Column(Integer, default=4)

@@ -39,8 +39,8 @@ class User(Base):
     
     profile_photo_url = Column(String, nullable=True)
     shift_type = Column(String, default="General Shift")
-    shift_start = Column(String, default="09:30:00")
-    shift_end = Column(String, default="18:00:00")
+    shift_start = Column(String, default="09:00:00")
+    shift_end = Column(String, default="17:30:00")
     
     emergency_contact_name = Column(String, nullable=True)
     emergency_contact_number = Column(String, nullable=True)

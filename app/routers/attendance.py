@@ -123,9 +123,9 @@ async def punch_attendance(
         Attendance.date == today
     ).first()
 
-    if not record:
-        record = Attendance(worker_id=worker.id, date=today, status="Present")
-        db.add(record)
+    from app.models.holiday import Holiday
+    hol = db.query(Holiday).filter(Holiday.date == today).first()
+    is_sun = today.weekday() == 6
 
     if action.lower() == "punch in":
         record.punch_in = now
@@ -136,7 +136,13 @@ async def punch_attendance(
         
         stats = TimeEngine.calculate_status(settings, punch_in=now)
         record.late_minutes = stats.get("late_minutes", 0)
-        if stats.get("status") == "Half Day":
+        
+        if hol:
+            record.status = "Festival Work"
+        elif is_sun:
+            record.status = "Sunday Work"
+            record.is_sunday = True
+        elif stats.get("status") == "Half Day":
             record.status = "Half Day"
             
     elif action.lower() == "punch out":
@@ -275,7 +281,9 @@ def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = 
         "working_hours": 0.0,
         "sunday_work": 0,
         "holiday_work": 0,
-        "net_attendance_percent": 0.0
+        "net_attendance_percent": 0.0,
+        "total_ot_hours": 0.0,
+        "sunday_worked": 0
     }
     
     for r in records:
@@ -289,9 +297,29 @@ def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = 
         if r.ot_hours: summary["ot_hours"] += r.ot_hours
         if r.net_working_hours: summary["working_hours"] += r.net_working_hours
         if r.is_sunday: summary["sunday_work"] += 1
+
+    # Virtual absences up to today
+    record_map = {r.date if not isinstance(r.date, str) else datetime.strptime(str(r.date)[:10], "%Y-%m-%d").date(): r for r in records}
+    from datetime import timedelta
+    from app.models.holiday import Holiday
+    today = datetime.now().date()
+    holidays = db.query(Holiday).filter(Holiday.date >= start_date, Holiday.date <= end_date).all()
+    holiday_dates = {h.date for h in holidays}
+    
+    curr_d = start_date
+    limit_d = min(end_date, today)
+    while curr_d <= limit_d:
+        if curr_d not in record_map:
+            is_sun = curr_d.weekday() == 6
+            is_hol = curr_d in holiday_dates
+            if not is_sun and not is_hol:
+                summary["absent_days"] += 1
+        curr_d += timedelta(days=1)
         
     summary["ot_hours"] = round(summary["ot_hours"], 1)
     summary["working_hours"] = round(summary["working_hours"], 1)
+    summary["total_ot_hours"] = summary["ot_hours"]
+    summary["sunday_worked"] = summary["sunday_work"]
 
     total_working_days = summary["present_days"] + summary["absent_days"] + summary["half_days"] + summary["leave_days"]
     if total_working_days > 0:
@@ -344,8 +372,12 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
         if rec:
             is_non_working = rec.status in ["Absent", "Leave", "Holiday", "Not Punched", "Sunday"]
             status_val = rec.status or ("Sunday Work" if rec.is_sunday else ("Holiday" if is_sun else "Present"))
-            if holiday_name and rec.status not in ["Present", "Half Day", "Sunday Work"]:
-                status_val = f"Holiday: {holiday_name}"
+            if holiday_name:
+                if rec.punch_in or (rec.net_working_hours and rec.net_working_hours > 0) or rec.status in ["Present", "Half Day", "Sunday Work", "Festival Work", "Holiday Work"]:
+                    status_val = "Festival Work"
+                    is_non_working = False
+                else:
+                    status_val = f"Holiday: {holiday_name}"
 
             days_list.append({
                 "id": rec.id,
@@ -457,11 +489,11 @@ async def mark_or_update_day_attendance(
         working_to_save = 0.0
         ot_to_save = 0.0
     else:
-        # Auto-calculate OT ONLY if punch_out is at or after 18:30 (6:30 PM threshold)
+        # Auto-calculate OT ONLY if punch_out is at or after 18:00 (6:00 PM threshold - 30m after 17:30 shift end)
         calculated_ot = 0.0
         if punch_in_dt and punch_out_dt:
-            min_ot_start_dt = datetime.combine(date_val, time(18, 30))
-            shift_end_dt = datetime.combine(date_val, time(18, 0))
+            min_ot_start_dt = datetime.combine(date_val, time(18, 0))
+            shift_end_dt = datetime.combine(date_val, time(17, 30))
             if punch_out_dt >= min_ot_start_dt:
                 ot_seconds = (punch_out_dt - shift_end_dt).total_seconds()
                 calculated_ot = round(ot_seconds / 3600.0, 1)

@@ -51,13 +51,22 @@ class TimeEngine:
         punch_in_local = to_ist_local(punch_in)
         punch_out_local = to_ist_local(punch_out) if punch_out else None
 
-        # Parse settings times for General Shift
-        try:
-            start_h, start_m, start_s = map(int, (settings.default_shift_start or '09:30:00').split(':'))
-            end_h, end_m, end_s = map(int, (settings.default_shift_end or '18:00:00').split(':'))
-        except Exception:
+        # Parse settings times for General Shift:
+        # Prior to 5 Sep 2026 (August & 1-4 Sep): Shift timing is 09:30 AM - 06:00 PM
+        # From 5 Sep 2026 onwards: Shift timing is 09:00 AM - 05:30 PM
+        effective_date_0530 = date(2026, 9, 5)
+        punch_date = punch_in_local.date()
+
+        if punch_date < effective_date_0530:
             start_h, start_m, start_s = 9, 30, 0
             end_h, end_m, end_s = 18, 0, 0
+        else:
+            try:
+                start_h, start_m, start_s = map(int, (settings.default_shift_start or '09:00:00').split(':'))
+                end_h, end_m, end_s = map(int, (settings.default_shift_end or '17:30:00').split(':'))
+            except Exception:
+                start_h, start_m, start_s = 9, 0, 0
+                end_h, end_m, end_s = 17, 30, 0
 
         try:
             late_h, late_m, late_s = map(int, (getattr(settings, 'present_window_end', None) or '11:00:00').split(':'))
@@ -98,12 +107,14 @@ class TimeEngine:
         }
         
         if punch_out_local:
-            total_seconds = (punch_out_local - punch_in_local).total_seconds()
+            # Effective punch-in for working hours calculation starts at shift_start if worker punched in early
+            effective_punch_in = max(punch_in_local, shift_start)
+            total_seconds = (punch_out_local - effective_punch_in).total_seconds()
             
             # Deduct 30 mins (0.5 hours) lunch break if worker was present between 01:00 PM and 01:30 PM
             lunch_start = punch_in_local.replace(hour=13, minute=0, second=0)
             lunch_end = punch_in_local.replace(hour=13, minute=30, second=0)
-            if punch_in_local <= lunch_start and punch_out_local >= lunch_end:
+            if effective_punch_in <= lunch_start and punch_out_local >= lunch_end:
                 total_seconds -= 1800 # 30 mins in seconds
                 
             result["net_working_hours"] = max(0.0, round(total_seconds / 3600.0, 2))
@@ -216,9 +227,9 @@ class PayrollSyncEngine:
                 if att.late_minutes and att.late_minutes > 0:
                     late += 1
 
-                if (is_sun or is_hol) and (s in ["present", "half day", "sunday work", "holiday work"] or worked_hrs > 0):
-                    if is_hol: holiday_work_count += 1
-                    if is_sun: sunday_work_count += 1
+                if (is_sun or is_hol or s in ["sunday work", "festival work", "holiday work"]) and (s in ["present", "half day", "sunday work", "holiday work", "festival work"] or worked_hrs > 0):
+                    if is_hol or s in ["festival work", "holiday work"]: holiday_work_count += 1
+                    if is_sun or s == "sunday work": sunday_work_count += 1
                     sunday_hours += worked_hrs
                     total_sunday_earned += worked_hrs * sunday_hourly_rate
                     if s == "half day": half += 0.5

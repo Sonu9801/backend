@@ -21,8 +21,8 @@ class WorkerBase(CamelModel):
     
     profile_photo_url: Optional[str] = None
     shift_type: str = "General Shift"
-    shift_start: str = "09:30:00"
-    shift_end: str = "18:00:00"
+    shift_start: str = "09:00:00"
+    shift_end: str = "17:30:00"
     
     emergency_contact_name: Optional[str] = None
     emergency_contact_number: Optional[str] = None
