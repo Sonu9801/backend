@@ -125,7 +125,7 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
         sp_base = sp.monthly_salary or 20000.0
         calculated_ot_rate = (sp_base / 30.0) / 8.0
         ot_rate = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calculated_ot_rate
-        sunday_rate = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else (calculated_ot_rate * 2.0)
+        sunday_rate = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else calculated_ot_rate
 
         ot_amount = stats["ot_hours"] * ot_rate
         sunday_amount = stats["sunday_hours"] * sunday_rate
@@ -241,7 +241,7 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
 
         daily_rate = base_salary / 30.0
         hourly_rate = daily_rate / 8.0
-        sunday_hourly_rate = hourly_rate * 2.0
+        sunday_hourly_rate = hourly_rate
 
         holidays_db = db.query(Holiday).filter(
             Holiday.date >= start_date,
@@ -556,7 +556,7 @@ def get_payroll_full_analytics(db: Session = Depends(get_db)):
             sp_base = sp.monthly_salary or 20000.0
             calc_ot_rate = (sp_base / 30.0) / 8.0
             ot_r = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calc_ot_rate
-            sun_r = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else (calc_ot_rate * 2.0)
+            sun_r = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else calc_ot_rate
 
             w_ot = stats["ot_hrs"] * ot_r
             w_sun = stats["sunday_hrs"] * sun_r

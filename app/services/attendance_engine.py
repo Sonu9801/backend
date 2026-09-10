@@ -160,7 +160,7 @@ class PayrollSyncEngine:
         base_monthly = (salary_profile.monthly_salary if (salary_profile and salary_profile.monthly_salary) else 20000.0)
         daily_rate = base_monthly / 30.0
         hourly_rate = daily_rate / 8.0
-        sunday_hourly_rate = hourly_rate * 2.0
+        sunday_hourly_rate = hourly_rate
 
         payroll_record = db.query(PayrollRecord).filter(
             PayrollRecord.worker_id == attendance.worker_id,
