@@ -234,7 +234,7 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
         # Priority for active salary profile monthly salary unless payroll record is Approved/Paid
         active_monthly_salary = (sp.monthly_salary if (sp and sp.monthly_salary) else 20000.0)
         
-        if pr and (pr.status or "").lower() in ["approved", "paid"] and pr.base_salary:
+        if pr and pr.base_salary:
             base_salary = pr.base_salary
         else:
             base_salary = active_monthly_salary
@@ -308,21 +308,16 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
         deductions = advances_by_worker.get(w.id, 0.0)
 
         # Override / Sync with DB record
-        if pr and ((pr.status or "").lower() in ["approved", "paid"] or (pr.final_salary is not None and pr.final_salary > 0)):
+        if pr:
             ot_amount = pr.ot_amount if pr.ot_amount is not None else ot_amount
             sunday_amount = pr.sunday_amount if pr.sunday_amount is not None else sunday_amount
-            bonus_amount = pr.bonus_amount or 0.0
-            deductions = pr.deductions if pr.deductions is not None else deductions
-            final_salary = pr.final_salary if pr.final_salary is not None else 0.0
-            total_salary = round(final_salary - bonus_amount + deductions, 2)
-            status = pr.status or "Draft"
-        elif pr:
-            bonus_amount = pr.bonus_amount or 0.0
+            bonus_amount = pr.bonus_amount if pr.bonus_amount is not None else 0.0
             deductions = pr.deductions if pr.deductions is not None else deductions
             status = pr.status or "Draft"
             total_salary = round(earned_base_salary + ot_amount + sunday_amount, 2)
             final_salary = round(total_salary + bonus_amount - deductions, 2)
             pr.final_salary = final_salary
+            pr.base_salary = base_salary
             db.add(pr)
         else:
             status = "Draft"

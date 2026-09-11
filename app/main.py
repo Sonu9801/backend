@@ -32,6 +32,7 @@ allowed_origins = [
     "http://localhost:3000",
     "http://localhost:3001",
     "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
     "https://foxenterprises.co.in",
     "https://www.foxenterprises.co.in",
     "http://localhost:8000",

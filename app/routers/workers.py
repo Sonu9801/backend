@@ -237,15 +237,12 @@ async def update_worker(worker_id: int, worker_in: WorkerUpdate, db: Session = D
         new_monthly = salary_data.get("monthly_salary")
         if new_monthly:
             from app.models.payroll import PayrollRecord
-            from sqlalchemy import or_, func
-            draft_payroll_records = db.query(PayrollRecord).filter(
+            from sqlalchemy import func
+            payroll_records = db.query(PayrollRecord).filter(
                 PayrollRecord.worker_id == worker.id,
-                or_(
-                    func.lower(PayrollRecord.status) == "draft",
-                    PayrollRecord.status.is_(None)
-                )
+                func.lower(PayrollRecord.status) != "paid"
             ).all()
-            for pr in draft_payroll_records:
+            for pr in payroll_records:
                 pr.base_salary = float(new_monthly)
                 pr.final_salary = pr.base_salary + (pr.ot_amount or 0.0) + (pr.sunday_amount or 0.0) + (pr.bonus_amount or 0.0) - (pr.deductions or 0.0)
             
