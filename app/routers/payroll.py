@@ -196,7 +196,7 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
     start_date = f"{year}-{month_num:02d}-01"
     end_date = f"{year}-{month_num:02d}-{last_day}"
     
-    workers = db.query(User).filter(User.employee_id.isnot(None), User.employment_status == "Active").all()
+    workers = db.query(User).filter(User.employee_id.isnot(None), User.employment_status == "Active").order_by(User.employee_id.asc()).all()
     logs = db.query(Attendance).filter(
         Attendance.date >= start_date,
         Attendance.date <= end_date
@@ -301,30 +301,29 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
 
         paid_days = present + (half * 0.5) + leave_count + holiday_count + sunday_count
         absent_days = max(0.0, last_day - paid_days)
-        effective_paid_days = max(0.0, 30.0 - absent_days)
+        effective_paid_days = 30.0 if absent_days == 0 else min(30.0, paid_days)
         earned_base_salary = round(daily_rate * effective_paid_days, 2)
 
         bonus_amount = 0.0
         deductions = advances_by_worker.get(w.id, 0.0)
 
         # Override / Sync with DB record
-        if pr:
-            if (pr.status or "").lower() not in ["approved", "paid"]:
-                pr.base_salary = base_salary
-                pr.ot_amount = ot_amount
-                pr.sunday_amount = sunday_amount
-            else:
-                ot_amount = pr.ot_amount if pr.ot_amount is not None else ot_amount
-                sunday_amount = pr.sunday_amount if pr.sunday_amount is not None else sunday_amount
-
+        if pr and ((pr.status or "").lower() in ["approved", "paid"] or (pr.final_salary is not None and pr.final_salary > 0)):
+            ot_amount = pr.ot_amount if pr.ot_amount is not None else ot_amount
+            sunday_amount = pr.sunday_amount if pr.sunday_amount is not None else sunday_amount
+            bonus_amount = pr.bonus_amount or 0.0
+            deductions = pr.deductions if pr.deductions is not None else deductions
+            final_salary = pr.final_salary if pr.final_salary is not None else 0.0
+            total_salary = round(final_salary - bonus_amount + deductions, 2)
+            status = pr.status or "Draft"
+        elif pr:
             bonus_amount = pr.bonus_amount or 0.0
             deductions = pr.deductions if pr.deductions is not None else deductions
             status = pr.status or "Draft"
             total_salary = round(earned_base_salary + ot_amount + sunday_amount, 2)
             final_salary = round(total_salary + bonus_amount - deductions, 2)
-            if (pr.status or "").lower() not in ["approved", "paid"]:
-                pr.final_salary = final_salary
-                db.add(pr)
+            pr.final_salary = final_salary
+            db.add(pr)
         else:
             status = "Draft"
             total_salary = round(earned_base_salary + ot_amount + sunday_amount, 2)

@@ -52,7 +52,7 @@ def get_workers(
     total = query.count()
     total_pages = max(1, -(-total // page_size))  # ceil division
     offset = (page - 1) * page_size
-    workers = query.order_by(User.id).offset(offset).limit(page_size).all()
+    workers = query.order_by(User.employee_id.asc()).offset(offset).limit(page_size).all()
 
     from datetime import datetime, timezone
     today = datetime.now(timezone.utc).date()

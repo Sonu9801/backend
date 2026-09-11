@@ -39,7 +39,7 @@ class GeofenceEngine:
 
 class TimeEngine:
     @staticmethod
-    def calculate_status(settings: AttendanceSettings, punch_in: datetime, punch_out: datetime = None) -> dict:
+    def calculate_status(settings: AttendanceSettings, punch_in: datetime, punch_out: datetime = None, worker = None) -> dict:
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         
         # Helper to convert naive database IST datetime or aware datetime to IST
@@ -51,15 +51,31 @@ class TimeEngine:
         punch_in_local = to_ist_local(punch_in)
         punch_out_local = to_ist_local(punch_out) if punch_out else None
 
-        # Parse settings times for General Shift:
-        # Prior to 5 Sep 2026 (August & 1-4 Sep): Shift timing is 09:30 AM - 06:00 PM
-        # From 5 Sep 2026 onwards: Shift timing is 09:00 AM - 05:30 PM
+        # Parse settings times for Shift:
         effective_date_0530 = date(2026, 9, 5)
         punch_date = punch_in_local.date()
 
-        if punch_date < effective_date_0530:
+        start_h, start_m, start_s = 9, 0, 0
+        end_h, end_m, end_s = 17, 30, 0
+        late_h, late_m, late_s = 9, 30, 0
+
+        if worker and getattr(worker, 'shift_start', None) and getattr(worker, 'shift_end', None):
+            try:
+                s_parts = [int(p) for p in worker.shift_start.split(':')]
+                e_parts = [int(p) for p in worker.shift_end.split(':')]
+                start_h, start_m = s_parts[0], s_parts[1]
+                start_s = s_parts[2] if len(s_parts) > 2 else 0
+                end_h, end_m = e_parts[0], e_parts[1]
+                end_s = e_parts[2] if len(e_parts) > 2 else 0
+                # Late threshold = shift start + 30 mins
+                late_time = (datetime(2000, 1, 1, start_h, start_m, start_s) + timedelta(minutes=30)).time()
+                late_h, late_m, late_s = late_time.hour, late_time.minute, late_time.second
+            except Exception:
+                pass
+        elif punch_date < effective_date_0530:
             start_h, start_m, start_s = 9, 30, 0
             end_h, end_m, end_s = 18, 0, 0
+            late_h, late_m, late_s = 10, 0, 0
         else:
             try:
                 start_h, start_m, start_s = map(int, (settings.default_shift_start or '09:00:00').split(':'))
@@ -68,10 +84,10 @@ class TimeEngine:
                 start_h, start_m, start_s = 9, 0, 0
                 end_h, end_m, end_s = 17, 30, 0
 
-        try:
-            late_h, late_m, late_s = map(int, (getattr(settings, 'present_window_end', None) or '11:00:00').split(':'))
-        except Exception:
-            late_h, late_m, late_s = 11, 0, 0
+            try:
+                late_h, late_m, late_s = map(int, (getattr(settings, 'present_window_end', None) or '09:30:00').split(':'))
+            except Exception:
+                late_h, late_m, late_s = 9, 30, 0
 
         try:
             half_day_h, half_day_m, half_day_s = map(int, (settings.half_day_start or '13:00:00').split(':'))
@@ -84,13 +100,13 @@ class TimeEngine:
         half_day_threshold = punch_in_local.replace(hour=half_day_h, minute=half_day_m, second=half_day_s)
         
         late_minutes = 0
-        if punch_in_local > shift_start:
+        if punch_in_local > late_threshold:
             late_minutes = int((punch_in_local - shift_start).total_seconds() / 60)
             
         # Business Rule:
         # Punch-in > 1:00 PM (13:00) -> Half Day
-        # Punch-in > 11:00 AM -> Late
-        # Punch-in <= 11:00 AM -> Present
+        # Punch-in > 09:30 AM -> Late (30 mins relaxation after 09:00 AM shift start)
+        # Punch-in <= 09:30 AM -> Present
         if punch_in_local > half_day_threshold:
             status = "Half Day"
         elif punch_in_local > late_threshold:
@@ -256,7 +272,7 @@ class PayrollSyncEngine:
 
         paid_days = present + (half * 0.5) + leave_count + holiday_count + sunday_count
         absent_days = max(0.0, days_in_month - paid_days)
-        effective_paid_days = max(0.0, 30.0 - absent_days)
+        effective_paid_days = 30.0 if absent_days == 0 else min(30.0, paid_days)
         earned_base_salary = round(daily_rate * effective_paid_days, 2)
 
         payroll_record.days_present = int(present)

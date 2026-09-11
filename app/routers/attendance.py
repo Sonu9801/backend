@@ -134,7 +134,7 @@ async def punch_attendance(
         record.punch_out_photo_url = None
         worker.status = "Active"
         
-        stats = TimeEngine.calculate_status(settings, punch_in=now)
+        stats = TimeEngine.calculate_status(settings, punch_in=now, worker=worker)
         record.late_minutes = stats.get("late_minutes", 0)
         
         if hol:
@@ -142,8 +142,8 @@ async def punch_attendance(
         elif is_sun:
             record.status = "Sunday Work"
             record.is_sunday = True
-        elif stats.get("status") == "Half Day":
-            record.status = "Half Day"
+        else:
+            record.status = stats.get("status", "Present")
             
     elif action.lower() == "punch out":
         if not record.punch_in:
@@ -152,7 +152,7 @@ async def punch_attendance(
         record.punch_out_photo_url = photo_url
         worker.status = "Offline"
         
-        stats = TimeEngine.calculate_status(settings, punch_in=record.punch_in, punch_out=now)
+        stats = TimeEngine.calculate_status(settings, punch_in=record.punch_in, punch_out=now, worker=worker)
         record.net_working_hours = stats.get("net_working_hours", 0.0)
         record.ot_hours = stats.get("ot_hours", 0.0)
         record.early_exit_minutes = stats.get("early_exit_minutes", 0)
