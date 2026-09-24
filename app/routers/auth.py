@@ -204,8 +204,12 @@ def login(
 @router.get("/setup-status")
 def setup_status(db: Session = Depends(get_db)):
     """Check if the system has no users registered yet (first-run setup)."""
-    user_count = db.query(User).count()
-    return {"setup_required": user_count == 0}
+    try:
+        user_count = db.query(User).count()
+        return {"setup_required": user_count == 0}
+    except Exception as e:
+        logger.error(f"[Auth] Error checking setup status: {e}")
+        return {"setup_required": False}
 
 
 # ─── POST /auth/register ─────────────────────────────────────────────────────
