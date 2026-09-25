@@ -11,12 +11,26 @@ if settings.DATABASE_URL.startswith("sqlite"):
         settings.DATABASE_URL, connect_args={"check_same_thread": False}
     )
 else:
-    engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+    engine = create_engine(
+        settings.DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=5,
+        pool_recycle=300,
+        connect_args={
+            "connect_timeout": 5,
+            "keepalives": 1,
+            "keepalives_idle": 10,
+            "keepalives_interval": 5,
+            "keepalives_count": 3
+        }
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 Base = declarative_base()
 
-def init_db(retries: int = 15, delay: int = 2):
+def init_db(retries: int = 5, delay: int = 1):
     """Initializes tables in database with connection retry logic."""
     for attempt in range(1, retries + 1):
         try:

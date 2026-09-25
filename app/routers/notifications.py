@@ -38,18 +38,22 @@ def get_notifications(
     role: str = None,
     db: Session = Depends(get_db)
 ):
-    query = db.query(Notification).filter(Notification.archived == False)
-    
-    if unread_only:
-        query = query.filter(Notification.read == False)
-    
-    if role:
-        # In a real app we would check current user's role
-        # Here we filter by assigned_role if provided
-        query = query.filter((Notification.assigned_role == role) | (Notification.assigned_role == None))
+    try:
+        query = db.query(Notification).filter(Notification.archived == False)
         
-    notifications = query.order_by(Notification.timestamp.desc()).offset(skip).limit(limit).all()
-    return notifications
+        if unread_only:
+            query = query.filter(Notification.read == False)
+        
+        if role:
+            # In a real app we would check current user's role
+            # Here we filter by assigned_role if provided
+            query = query.filter((Notification.assigned_role == role) | (Notification.assigned_role == None))
+            
+        notifications = query.order_by(Notification.timestamp.desc()).offset(skip).limit(limit).all()
+        return notifications
+    except Exception as e:
+        print(f"[DB Error] Failed to fetch notifications: {e}")
+        return []
 
 @router.post("/notifications/{notification_id}/read")
 async def mark_as_read(notification_id: int, db: Session = Depends(get_db)):

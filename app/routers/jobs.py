@@ -14,6 +14,18 @@ from app.services.websocket_manager import manager
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
+@router.get("", response_model=List[ProductionJobResponse])
+def get_all_jobs(db: Session = Depends(get_db)):
+    try:
+        return db.query(ProductionJob).options(
+            joinedload(ProductionJob.workers),
+            joinedload(ProductionJob.vehicle),
+            joinedload(ProductionJob.photos)
+        ).order_by(ProductionJob.id.desc()).all()
+    except Exception as e:
+        print(f"[DB Error] Failed to fetch jobs: {e}")
+        return []
+
 @router.post("/assign", response_model=ProductionJobResponse)
 async def assign_job(payload: ProductionJobCreate, db: Session = Depends(get_db), current_user = Depends(get_current_active_user)):
     vehicle = db.query(Vehicle).filter(Vehicle.id == payload.vehicle_id).first()

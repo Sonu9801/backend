@@ -198,15 +198,25 @@ async def get_current_user(
         if session is None:
             raise credentials_exception
 
-    # Resolve user directly from DB to avoid SQLAlchemy session lifecycle bugs
-    if token_data.username.startswith("worker:"):
-        worker_id = int(token_data.username.split(":")[1])
-        user = db.query(User).filter(User.id == worker_id).first()
-        if user:
-            # Dynamically attach role for RoleChecker
-            user.role = token_data.role
-    else:
-        user = db.query(User).filter(User.email == token_data.username).first()
+    # Resolve user (using user_cache to prevent DB connection pool exhaustion)
+    cache_key = f"user:{token_data.username}"
+    user = user_cache.get(cache_key)
+
+    if user is None:
+        try:
+            if token_data.username.startswith("worker:"):
+                worker_id = int(token_data.username.split(":")[1])
+                user = db.query(User).filter(User.id == worker_id).first()
+                if user:
+                    user.role = token_data.role
+            else:
+                user = db.query(User).filter(User.email == token_data.username).first()
+
+            if user:
+                user_cache.set(cache_key, user, ttl_seconds=120)
+        except Exception as e:
+            print(f"[Auth DB Error] User lookup failed for {token_data.username}: {e}")
+            raise credentials_exception
 
     if user is None:
         raise credentials_exception
