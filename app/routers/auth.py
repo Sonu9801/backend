@@ -25,7 +25,7 @@ from typing import Optional
 from app.database import get_db
 from app.models.user import User
 from app.models.device import Device
-from app.schemas.user import UserCreate, UserResponse, LoginRequest, ChangePasswordRequest
+from app.schemas.user import UserCreate, UserResponse, LoginRequest, ChangePasswordRequest, VerifyUserResetRequest, ResetPasswordPublicRequest
 from app.auth import (
     create_access_token,
     create_refresh_token,
@@ -203,8 +203,8 @@ def login(
             if user.password == entered_password:
                 is_authenticated = True
 
-    # Fallback check for default PIN (last 4 digits of mobile number or 1234)
-    if not is_authenticated:
+    # Fallback check for default PIN (last 4 digits of mobile number or 1234) ONLY if no password set yet
+    if not is_authenticated and not user.password:
         user_mobile = "".join(filter(str.isdigit, str(user.mobile_number or "")))
         default_pin = user_mobile[-4:] if len(user_mobile) >= 4 else "1234"
         if entered_password == default_pin or entered_password == "1234":
@@ -357,8 +357,8 @@ def worker_login(
             if worker.password == entered_pass:
                 is_authenticated = True
 
-    # Fallback to default PIN or 1234
-    if not is_authenticated:
+    # Fallback to default PIN or 1234 ONLY if no password set yet
+    if not is_authenticated and not worker.password:
         if entered_pass == default_pin or entered_pass == "1234":
             is_authenticated = True
             worker.password = hash_password(entered_pass)
@@ -411,24 +411,24 @@ def refresh_access_token(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # Try cookie first, then request body
+    # Try request body first (explicit client token), then cookie
     cookie_token = request.cookies.get("refresh_token")
     body_token = body.refresh_token if body else None
     payload = None
 
-    # 1. Try decoding refresh token from cookie
-    if cookie_token:
+    # 1. Try decoding refresh token from body first (explicit client token)
+    if body_token:
         try:
-            decoded = jwt.decode(cookie_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            decoded = jwt.decode(body_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             if decoded.get("type") == "refresh":
                 payload = decoded
         except JWTError:
             pass
 
-    # 2. Try decoding refresh token from body if cookie failed or is missing
-    if not payload and body_token:
+    # 2. Try decoding refresh token from cookie if body token was not provided or failed
+    if not payload and cookie_token:
         try:
-            decoded = jwt.decode(body_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            decoded = jwt.decode(cookie_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             if decoded.get("type") == "refresh":
                 payload = decoded
         except JWTError:
@@ -586,6 +586,106 @@ def change_password(
     user_cache.invalidate(f"user:{current_user.id}")
 
     return {"message": "Password changed successfully"}
+
+
+# ─── POST /auth/forgot-password/verify-user ─────────────────────────────────
+
+@router.post("/forgot-password/verify-user")
+def verify_user_for_reset(payload: VerifyUserResetRequest, db: Session = Depends(get_db)):
+    """
+    Verify if user with given email/mobile/employee_id exists in database.
+    """
+    raw_identity = (payload.identity or "").strip()
+    if not raw_identity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please enter your Email, Mobile Number, or Employee ID",
+        )
+
+    digits_only = "".join(filter(str.isdigit, raw_identity))
+    clean_mobile = digits_only[-10:] if len(digits_only) >= 10 else raw_identity
+
+    from sqlalchemy import func
+    user = db.query(User).filter(
+        (func.lower(User.email) == raw_identity.lower()) |
+        (User.mobile_number == raw_identity) |
+        (User.mobile_number == clean_mobile) |
+        (func.lower(User.employee_id) == raw_identity.lower())
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No account found with this Login ID. Only registered users can reset password.",
+        )
+
+    masked_email = user.email
+    if user.email and "@" in user.email:
+        parts = user.email.split("@")
+        if len(parts[0]) > 2:
+            masked_email = parts[0][:2] + "***@" + parts[1]
+    
+    masked_mobile = str(user.mobile_number) if user.mobile_number else ""
+    if user.mobile_number and len(str(user.mobile_number)) >= 4:
+        masked_mobile = "******" + str(user.mobile_number)[-4:]
+
+    return {
+        "exists": True,
+        "name": user.name or "User",
+        "email": user.email,
+        "masked_email": masked_email,
+        "masked_mobile": masked_mobile,
+    }
+
+
+# ─── POST /auth/forgot-password/reset ────────────────────────────────────────
+
+@router.post("/forgot-password/reset")
+def reset_password_public(payload: ResetPasswordPublicRequest, db: Session = Depends(get_db)):
+    """
+    Reset password for verified account.
+    """
+    raw_identity = (payload.identity or "").strip()
+    new_password = (payload.new_password or "").strip()
+
+    if not raw_identity or not new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Identity and new password are required",
+        )
+
+    if len(new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 6 characters long",
+        )
+
+    digits_only = "".join(filter(str.isdigit, raw_identity))
+    clean_mobile = digits_only[-10:] if len(digits_only) >= 10 else raw_identity
+
+    from sqlalchemy import func
+    user = db.query(User).filter(
+        (func.lower(User.email) == raw_identity.lower()) |
+        (User.mobile_number == raw_identity) |
+        (User.mobile_number == clean_mobile) |
+        (func.lower(User.employee_id) == raw_identity.lower())
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        )
+
+    user.password = hash_password(new_password)
+    db.commit()
+
+    user_cache.invalidate(f"email:{user.email}")
+    user_cache.invalidate(f"user:{user.id}")
+    session_store.invalidate_all_user_sessions(user.id)
+
+    return {"message": "Password updated successfully! You can now log in with your new password."}
+
 
 
 

@@ -91,6 +91,9 @@ async def punch_attendance(
     now = datetime.now()
     today = now.date()
 
+    is_sun = (today.weekday() == 6)
+    hol = db.query(Holiday).filter(Holiday.date == today).first()
+
     # Prevent duplicate punches (if already punched in/out in the last 1 minute)
     last_log = db.query(AttendanceLog).filter(
         AttendanceLog.worker_id == worker.id,
@@ -123,9 +126,16 @@ async def punch_attendance(
         Attendance.date == today
     ).first()
 
-    from app.models.holiday import Holiday
-    hol = db.query(Holiday).filter(Holiday.date == today).first()
-    is_sun = today.weekday() == 6
+    initial_status = "Festival Work" if hol else ("Sunday Work" if is_sun else "Present")
+
+    if not record:
+        record = Attendance(
+            worker_id=worker.id,
+            date=today,
+            status=initial_status,
+            is_sunday=is_sun
+        )
+        db.add(record)
 
     if action.lower() == "punch in":
         record.punch_in = now
@@ -139,6 +149,7 @@ async def punch_attendance(
         
         if hol:
             record.status = "Festival Work"
+            record.is_sunday = False
         elif is_sun:
             record.status = "Sunday Work"
             record.is_sunday = True
@@ -156,6 +167,13 @@ async def punch_attendance(
         record.net_working_hours = stats.get("net_working_hours", 0.0)
         record.ot_hours = stats.get("ot_hours", 0.0)
         record.early_exit_minutes = stats.get("early_exit_minutes", 0)
+
+        if hol:
+            record.status = "Festival Work"
+            record.is_sunday = False
+        elif is_sun or (record.date and record.date.weekday() == 6) or record.is_sunday:
+            record.status = "Sunday Work"
+            record.is_sunday = True
         
         profile = db.query(SalaryProfile).filter(SalaryProfile.worker_id == worker.id).first()
         if profile:
@@ -207,6 +225,7 @@ def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
 
 @router.get("/worker/{worker_id}/history")
 def get_worker_history(worker_id: int, month: Optional[str] = None, db: Session = Depends(get_db)):
+    from app.models.holiday import Holiday
     if month:
         import calendar
         try:
@@ -219,19 +238,37 @@ def get_worker_history(worker_id: int, month: Optional[str] = None, db: Session 
                 Attendance.date >= start_d,
                 Attendance.date <= end_d
             ).order_by(Attendance.date.desc()).all()
-            return [
-                {
+            
+            holidays = db.query(Holiday).filter(Holiday.date >= start_d, Holiday.date <= end_d).all()
+            holiday_dates = {h.date for h in holidays}
+            
+            result = []
+            for r in records:
+                r_date = r.date if isinstance(r.date, date) else datetime.strptime(str(r.date)[:10], "%Y-%m-%d").date()
+                st = r.status or "Present"
+                st_lower = st.lower()
+                is_sun = (r_date.weekday() == 6) or bool(r.is_sunday) or "sunday" in st_lower
+                is_hol = r_date in holiday_dates or "holiday" in st_lower or "festival" in st_lower
+                has_worked = st_lower in ["present", "late", "half day", "sunday work", "festival work", "holiday work"] or (r.net_working_hours and r.net_working_hours > 0)
+                
+                display_status = st
+                if is_hol and has_worked and "festival" not in st_lower and "holiday" not in st_lower:
+                    display_status = "Festival Work"
+                elif is_sun and has_worked and "sunday" not in st_lower:
+                    display_status = "Sunday Work"
+
+                result.append({
                     "id": r.id,
                     "date": r.date.isoformat() if hasattr(r.date, 'isoformat') else str(r.date),
-                    "status": r.status,
+                    "status": display_status,
                     "punch_in": to_ist(r.punch_in).isoformat() if r.punch_in else None,
                     "punch_out": to_ist(r.punch_out).isoformat() if r.punch_out else None,
                     "net_working_hours": r.net_working_hours,
                     "ot_hours": r.ot_hours,
-                    "late_minutes": r.late_minutes
-                }
-                for r in records
-            ]
+                    "late_minutes": r.late_minutes,
+                    "is_sunday": is_sun
+                })
+            return result
         except Exception:
             pass
 
@@ -241,19 +278,36 @@ def get_worker_history(worker_id: int, month: Optional[str] = None, db: Session 
         Attendance.date >= ninety_days_ago
     ).order_by(Attendance.date.desc()).all()
     
-    return [
-        {
+    holidays = db.query(Holiday).filter(Holiday.date >= ninety_days_ago).all()
+    holiday_dates = {h.date for h in holidays}
+    
+    result = []
+    for r in records:
+        r_date = r.date if isinstance(r.date, date) else datetime.strptime(str(r.date)[:10], "%Y-%m-%d").date()
+        st = r.status or "Present"
+        st_lower = st.lower()
+        is_sun = (r_date.weekday() == 6) or bool(r.is_sunday) or "sunday" in st_lower
+        is_hol = r_date in holiday_dates or "holiday" in st_lower or "festival" in st_lower
+        has_worked = st_lower in ["present", "late", "half day", "sunday work", "festival work", "holiday work"] or (r.net_working_hours and r.net_working_hours > 0)
+        
+        display_status = st
+        if is_hol and has_worked and "festival" not in st_lower and "holiday" not in st_lower:
+            display_status = "Festival Work"
+        elif is_sun and has_worked and "sunday" not in st_lower:
+            display_status = "Sunday Work"
+
+        result.append({
             "id": r.id,
             "date": r.date.isoformat() if hasattr(r.date, 'isoformat') else str(r.date),
-            "status": r.status,
+            "status": display_status,
             "punch_in": to_ist(r.punch_in).isoformat() if r.punch_in else None,
             "punch_out": to_ist(r.punch_out).isoformat() if r.punch_out else None,
             "net_working_hours": r.net_working_hours,
             "ot_hours": r.ot_hours,
-            "late_minutes": r.late_minutes
-        }
-        for r in records
-    ]
+            "late_minutes": r.late_minutes,
+            "is_sunday": is_sun
+        })
+    return result
 
 @router.get("/worker/{worker_id}/monthly-summary")
 def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = Depends(get_db)):
@@ -271,6 +325,10 @@ def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = 
         Attendance.date <= end_date
     ).all()
     
+    from app.models.holiday import Holiday
+    holidays = db.query(Holiday).filter(Holiday.date >= start_date, Holiday.date <= end_date).all()
+    holiday_dates = {h.date for h in holidays}
+    
     summary = {
         "present_days": 0,
         "absent_days": 0,
@@ -286,44 +344,86 @@ def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = 
         "sunday_worked": 0
     }
     
+    unique_sun_fest_dates = set()
+    sun_work_dates = set()
+    fest_work_dates = set()
+
     for r in records:
         status = (r.status or "").lower()
-        if status == "present": summary["present_days"] += 1
-        elif status == "absent": summary["absent_days"] += 1
-        elif status == "half day": summary["half_days"] += 1
-        elif status == "leave": summary["leave_days"] += 1
-        
-        if r.late_minutes and r.late_minutes > 0: summary["late_count"] += 1
-        if r.ot_hours: summary["ot_hours"] += r.ot_hours
-        if r.net_working_hours: summary["working_hours"] += r.net_working_hours
-        if r.is_sunday: summary["sunday_work"] += 1
+        r_date = r.date if isinstance(r.date, date) else datetime.strptime(str(r.date)[:10], "%Y-%m-%d").date()
+        is_sun = (r_date.weekday() == 6) or bool(r.is_sunday)
+        is_hol = r_date in holiday_dates or "holiday" in status or "festival" in status
+        has_worked = status in ["present", "late", "half day", "sunday work", "festival work", "holiday work"] or (r.net_working_hours and r.net_working_hours > 0) or bool(r.punch_in)
 
-    # Virtual absences up to today
-    record_map = {r.date if not isinstance(r.date, str) else datetime.strptime(str(r.date)[:10], "%Y-%m-%d").date(): r for r in records}
-    from datetime import timedelta
-    from app.models.holiday import Holiday
+        # Track Sunday & Festival work days for the separate extra-work metric
+        if is_sun or is_hol or "sunday work" in status or "festival work" in status or "holiday work" in status:
+            if (is_sun or "sunday work" in status) and has_worked:
+                sun_work_dates.add(r_date)
+                unique_sun_fest_dates.add(r_date)
+            if (is_hol or "festival work" in status or "holiday work" in status) and has_worked:
+                fest_work_dates.add(r_date)
+                unique_sun_fest_dates.add(r_date)
+
+        # Increment overall status counters (Every worked day, whether regular, Sunday, or Festival, counts in present_days!)
+        if status == "absent":
+            summary["absent_days"] += 1
+        elif status == "half day":
+            summary["half_days"] += 1
+        elif status in ["leave", "holiday", "sunday"] and not has_worked:
+            summary["leave_days"] += 1
+        elif has_worked or status in ["present", "late", "sunday work", "festival work", "holiday work"]:
+            summary["present_days"] += 1
+
+        if r.late_minutes and r.late_minutes > 0:
+            summary["late_count"] += 1
+            
+        if r.ot_hours:
+            summary["ot_hours"] += float(r.ot_hours)
+
+        if r.net_working_hours:
+            summary["working_hours"] += float(r.net_working_hours)
+
+    # Virtual absences & Paid Holidays up to today
+    record_map = {r.date if isinstance(r.date, date) else datetime.strptime(str(r.date)[:10], "%Y-%m-%d").date(): r for r in records}
     today = datetime.now().date()
-    holidays = db.query(Holiday).filter(Holiday.date >= start_date, Holiday.date <= end_date).all()
-    holiday_dates = {h.date for h in holidays}
     
     curr_d = start_date
     limit_d = min(end_date, today)
+    unworked_holidays_sundays = 0
+
     while curr_d <= limit_d:
-        if curr_d not in record_map:
-            is_sun = curr_d.weekday() == 6
-            is_hol = curr_d in holiday_dates
+        rec = record_map.get(curr_d)
+        is_sun = curr_d.weekday() == 6
+        is_hol = curr_d in holiday_dates
+        if rec:
+            st = (rec.status or "").lower()
+            hw = st in ["present", "late", "half day", "sunday work", "festival work", "holiday work"] or (rec.net_working_hours and rec.net_working_hours > 0) or bool(rec.punch_in)
+            if (is_sun or is_hol or st in ["holiday", "sunday"]) and not hw:
+                unworked_holidays_sundays += 1
+        else:
             if not is_sun and not is_hol:
                 summary["absent_days"] += 1
+            else:
+                unworked_holidays_sundays += 1
         curr_d += timedelta(days=1)
         
     summary["ot_hours"] = round(summary["ot_hours"], 1)
     summary["working_hours"] = round(summary["working_hours"], 1)
     summary["total_ot_hours"] = summary["ot_hours"]
-    summary["sunday_worked"] = summary["sunday_work"]
+    summary["sunday_work"] = len(sun_work_dates)
+    summary["holiday_work"] = len(fest_work_dates)
+    # Unique count of Sundays & Festival/Holiday worked days (no double counting)
+    summary["sunday_worked"] = len(unique_sun_fest_dates)
 
-    total_working_days = summary["present_days"] + summary["absent_days"] + summary["half_days"] + summary["leave_days"]
+    summary["paid_holidays"] = unworked_holidays_sundays
+    summary["total_paid_days"] = round(summary["present_days"] + (summary["half_days"] * 0.5) + summary["leave_days"] + unworked_holidays_sundays, 1)
+
+    # Directly assign present_days to total_paid_days as requested by user
+    summary["present_days"] = summary["total_paid_days"]
+
+    total_working_days = summary["present_days"] + summary["absent_days"]
     if total_working_days > 0:
-        summary["net_attendance_percent"] = round((summary["present_days"] + (summary["half_days"] * 0.5)) / total_working_days * 100, 1)
+        summary["net_attendance_percent"] = round((summary["present_days"] / (summary["present_days"] + summary["absent_days"])) * 100, 1)
         
     return summary
 
@@ -849,9 +949,14 @@ def get_analytics(
     query_workers = db.query(User).filter(User.employee_id.isnot(None))
     query_today = db.query(Attendance).filter(Attendance.date == today)
     
-    if getattr(user, "role", None) == "supervisor":
-        query_workers = query_workers.filter(User.department == getattr(user, "department", None))
-        query_today = query_today.join(User).filter(User.department == getattr(user, "department", None))
+    user_role = getattr(user, "role", "") or ""
+    user_dept = getattr(user, "department", None)
+    
+    if user_role.lower() == "supervisor" and user_dept and user_dept not in ["Management", "General", "Operations", "Admin", "All", ""]:
+        workers_in_dept = db.query(User).filter(User.employee_id.isnot(None), User.department == user_dept).count()
+        if workers_in_dept > 0:
+            query_workers = query_workers.filter(User.department == user_dept)
+            query_today = query_today.join(User, Attendance.worker_id == User.id).filter(User.department == user_dept)
 
     all_workers = query_workers.all()
     total_workers = len(all_workers)
@@ -912,8 +1017,10 @@ def get_analytics(
     for i in range(6, -1, -1):
         d = today - timedelta(days=i)
         day_records = db.query(Attendance).filter(Attendance.date == d)
-        if getattr(user, "role", None) == "supervisor":
-            day_records = day_records.join(User).filter(User.department == getattr(user, "department", None))
+        if user_role.lower() == "supervisor" and user_dept and user_dept not in ["Management", "General", "Operations", "Admin", "All", ""]:
+            workers_in_dept = db.query(User).filter(User.employee_id.isnot(None), User.department == user_dept).count()
+            if workers_in_dept > 0:
+                day_records = day_records.join(User, Attendance.worker_id == User.id).filter(User.department == user_dept)
         
         day_present = 0
         day_late = 0
@@ -943,4 +1050,74 @@ def get_analytics(
         "attendance_trend": trend,
         "dept_stats": dept_stats_list
     }
+
+
+@router.get("/today-records")
+def get_today_attendance_records(
+    user = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get comprehensive today attendance list for all employees/workers.
+    Returns status (Present, Absent, Late, Half Day), punch_in, punch_out, and working_hours.
+    """
+    now = datetime.now()
+    today = now.date()
+    
+    query_workers = db.query(User).filter(User.employee_id.isnot(None))
+    
+    user_role = getattr(user, "role", "") or ""
+    user_dept = getattr(user, "department", None)
+    
+    if user_role.lower() == "supervisor" and user_dept and user_dept not in ["Management", "General", "Operations", "Admin", "All", ""]:
+        workers_in_dept = db.query(User).filter(User.employee_id.isnot(None), User.department == user_dept).count()
+        if workers_in_dept > 0:
+            query_workers = query_workers.filter(User.department == user_dept)
+
+    all_workers = query_workers.order_by(User.name.asc()).all()
+    
+    today_records = db.query(Attendance).filter(Attendance.date == today).all()
+    records_by_worker = {r.worker_id: r for r in today_records}
+    
+    result = []
+    for w in all_workers:
+        att = records_by_worker.get(w.id)
+        
+        status = "Absent"
+        punch_in = None
+        punch_out = None
+        late_minutes = 0
+        working_hours = 0.0
+        
+        if att:
+            status = att.status or "Present"
+            if att.punch_in:
+                punch_in = att.punch_in.strftime("%I:%M %p")
+            if att.punch_out:
+                punch_out = att.punch_out.strftime("%I:%M %p")
+            late_minutes = att.late_minutes or 0
+            working_hours = att.net_working_hours or 0.0
+            if status == "Present" and late_minutes > 0:
+                status = "Late"
+        elif w.status and w.status.lower() in ["online", "working", "active"]:
+            status = "Present"
+            
+        result.append({
+            "id": w.id,
+            "name": w.name,
+            "employee_id": w.employee_id,
+            "department": w.department or "General",
+            "designation": w.designation or w.role or "Worker",
+            "profile_photo_url": w.profile_photo_url,
+            "status": status,  # Present, Absent, Late, Half Day
+            "is_late": late_minutes > 0 or status == "Late",
+            "late_minutes": late_minutes,
+            "punch_in": punch_in,
+            "punch_out": punch_out,
+            "working_hours": round(working_hours, 1),
+            "mobile_number": w.mobile_number,
+        })
+        
+    return result
+
 

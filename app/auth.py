@@ -163,19 +163,19 @@ async def get_current_user(
     cookie_token = request.cookies.get("access_token")
     payload = None
 
-    # 1. Try decoding access token from cookie
-    if cookie_token:
+    # 1. Try decoding access token from Authorization header first (explicit client token)
+    if bearer_token:
         try:
-            decoded = jwt.decode(cookie_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            decoded = jwt.decode(bearer_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             if decoded.get("type") == "access":
                 payload = decoded
         except JWTError:
             pass
 
-    # 2. Try decoding access token from Authorization header if cookie failed or is missing
-    if not payload and bearer_token:
+    # 2. Try decoding access token from cookie if header token was not provided or failed
+    if not payload and cookie_token:
         try:
-            decoded = jwt.decode(bearer_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            decoded = jwt.decode(cookie_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             if decoded.get("type") == "access":
                 payload = decoded
         except JWTError:

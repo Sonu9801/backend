@@ -47,7 +47,13 @@ def get_workers(
     if department and department != "All":
         query = query.filter(User.department == department)
     if status and status != "All":
-        query = query.filter(User.status == status)
+        from sqlalchemy import func, or_
+        query = query.filter(
+            or_(
+                func.lower(User.status) == status.lower(),
+                func.lower(User.employment_status) == status.lower()
+            )
+        )
 
     total = query.count()
     total_pages = max(1, -(-total // page_size))  # ceil division
