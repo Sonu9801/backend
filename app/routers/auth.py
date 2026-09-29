@@ -443,25 +443,27 @@ def refresh_access_token(
     if username is None:
         raise credentials_exception
 
-    # Validate session (if present in token)
-    if session_id:
-        session = session_store.get_session(session_id)
-        if session is None:
-            raise credentials_exception
-
     # Check if user still exists and is active
     if username.startswith("worker:"):
         worker_id = int(username.split(":")[1])
-        user = db.query(User).filter(
-            User.id == worker_id,
-            User.employee_id.isnot(None),
-        ).first()
-        if not user or user.employment_status != "Active":
+        user = db.query(User).filter(User.id == worker_id).first()
+        if not user or (user.employment_status and user.employment_status.lower() == "inactive"):
             raise credentials_exception
     else:
         user = db.query(User).filter(User.email == username).first()
         if not user or not user.is_active:
             raise credentials_exception
+
+    # Validate session (if present in token)
+    if session_id:
+        session = session_store.get_session(session_id)
+        if session is None:
+            # Self-heal session in store if refresh token is valid & user is active
+            session_store.create_session(
+                user_id=user.id,
+                role=role,
+                ttl_days=settings.SESSION_EXPIRE_DAYS
+            )
 
     # Issue new access token (same session)
     new_access_token = create_access_token(

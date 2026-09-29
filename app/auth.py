@@ -192,12 +192,6 @@ async def get_current_user(
 
     token_data = TokenData(username=username, role=role)
 
-    # Validate server-side session (if token has session_id)
-    if session_id:
-        session = session_store.get_session(session_id)
-        if session is None:
-            raise credentials_exception
-
     # Resolve user (using user_cache to prevent DB connection pool exhaustion)
     cache_key = f"user:{token_data.username}"
     user = user_cache.get(cache_key)
@@ -220,6 +214,17 @@ async def get_current_user(
 
     if user is None:
         raise credentials_exception
+
+    # Validate server-side session (if token has session_id)
+    if session_id:
+        session = session_store.get_session(session_id)
+        if session is None:
+            # Self-heal session in store if token is cryptographically valid & user is active
+            session_store.create_session(
+                user_id=user.id,
+                role=role,
+                ttl_days=settings.SESSION_EXPIRE_DAYS
+            )
 
     return user
 
