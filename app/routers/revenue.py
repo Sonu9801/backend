@@ -156,7 +156,7 @@ async def create_sales_invoice(
 @router.get("")
 def get_sales_invoices(
     page: int = 1,
-    page_size: int = 10,
+    page_size: int = 20,
     search: Optional[str] = None,
     approval_status: Optional[str] = None,
     payment_status: Optional[str] = None,
@@ -167,6 +167,8 @@ def get_sales_invoices(
     end_date: Optional[date] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    sort_by: Optional[str] = "customer_name",
+    sort_order: Optional[str] = "asc",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -204,7 +206,33 @@ def get_sales_invoices(
     total = query.count()
     total_pages = max(1, -(-total // page_size))
     offset = (page - 1) * page_size
-    items = query.order_by(desc(SalesInvoice.created_at)).offset(offset).limit(page_size).all()
+
+    if sort_by == "customer_name":
+        order_col = func.lower(coalesce(SalesInvoice.customer_name, ''))
+        if sort_order == "desc":
+            query = query.order_by(order_col.desc(), desc(SalesInvoice.created_at))
+        else:
+            query = query.order_by(order_col.asc(), desc(SalesInvoice.created_at))
+    elif sort_by == "invoice_number":
+        order_col = func.lower(coalesce(SalesInvoice.invoice_number, ''))
+        if sort_order == "desc":
+            query = query.order_by(order_col.desc())
+        else:
+            query = query.order_by(order_col.asc())
+    elif sort_by == "invoice_date":
+        if sort_order == "desc":
+            query = query.order_by(desc(SalesInvoice.invoice_date))
+        else:
+            query = query.order_by(asc(SalesInvoice.invoice_date))
+    elif sort_by == "grand_total":
+        if sort_order == "desc":
+            query = query.order_by(desc(SalesInvoice.grand_total))
+        else:
+            query = query.order_by(asc(SalesInvoice.grand_total))
+    else:
+        query = query.order_by(func.lower(coalesce(SalesInvoice.customer_name, '')).asc(), desc(SalesInvoice.created_at))
+
+    items = query.offset(offset).limit(page_size).all()
 
     return {
         "items": items,

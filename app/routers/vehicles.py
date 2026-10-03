@@ -33,7 +33,16 @@ def get_vehicles(
     total = query.count()
     total_pages = max(1, -(-total // page_size))
     offset = (page - 1) * page_size
-    items = query.order_by(Vehicle.id).offset(offset).limit(page_size).all()
+    # Auto-normalize any legacy 'EULER MOTERS' typo in database
+    try:
+        db.query(Vehicle).filter(Vehicle.dealer_name.ilike("%euler moters%")).update(
+            {Vehicle.dealer_name: "EULER MOTORS"}, synchronize_session=False
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    items = query.order_by(Vehicle.id.desc()).offset(offset).limit(page_size).all()
     return {
         "items": [VehicleResponse.model_validate(v).model_dump(by_alias=True) for v in items],
         "total": total,

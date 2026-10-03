@@ -152,7 +152,7 @@ async def create_invoice(
 @router.get("")
 def get_invoices(
     page: int = 1,
-    page_size: int = 10,
+    page_size: int = 20,
     search: Optional[str] = None,
     approval_status: Optional[str] = None,
     payment_status: Optional[str] = None,
@@ -163,6 +163,8 @@ def get_invoices(
     end_date: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    sort_by: Optional[str] = "vendor_name",
+    sort_order: Optional[str] = "asc",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -210,7 +212,33 @@ def get_invoices(
     total = query.count()
     total_pages = max(1, -(-total // page_size))
     offset = (page - 1) * page_size
-    items = query.order_by(desc(Invoice.created_at)).offset(offset).limit(page_size).all()
+
+    if sort_by == "vendor_name":
+        order_col = func.lower(coalesce(Invoice.vendor_name, ''))
+        if sort_order == "desc":
+            query = query.order_by(order_col.desc(), desc(Invoice.created_at))
+        else:
+            query = query.order_by(order_col.asc(), desc(Invoice.created_at))
+    elif sort_by == "invoice_number":
+        order_col = func.lower(coalesce(Invoice.invoice_number, ''))
+        if sort_order == "desc":
+            query = query.order_by(order_col.desc())
+        else:
+            query = query.order_by(order_col.asc())
+    elif sort_by == "invoice_date":
+        if sort_order == "desc":
+            query = query.order_by(desc(Invoice.invoice_date))
+        else:
+            query = query.order_by(asc(Invoice.invoice_date))
+    elif sort_by == "grand_total":
+        if sort_order == "desc":
+            query = query.order_by(desc(Invoice.grand_total))
+        else:
+            query = query.order_by(asc(Invoice.grand_total))
+    else:
+        query = query.order_by(func.lower(coalesce(Invoice.vendor_name, '')).asc(), desc(Invoice.created_at))
+
+    items = query.offset(offset).limit(page_size).all()
 
     return {
         "items": items,
@@ -322,15 +350,24 @@ def get_analytics(
     top_vendors = base_query.with_entities(Invoice.vendor_name, func.sum(Invoice.grand_total).label("total")).group_by(Invoice.vendor_name).order_by(desc("total")).limit(5).all()
     
     # Monthly Trend
+    from app.config import settings
+    is_sqlite = settings.DATABASE_URL.startswith("sqlite")
+    if is_sqlite:
+        month_expr = func.strftime('%Y-%m', coalesce(Invoice.invoice_date, func.date(Invoice.created_at)))
+        month_expr_direct = func.strftime('%Y-%m', Invoice.invoice_date)
+    else:
+        month_expr = func.to_char(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)), 'YYYY-MM')
+        month_expr_direct = func.to_char(Invoice.invoice_date, 'YYYY-MM')
+
     if s_date_str or e_date_str:
         monthly_trend = base_query.with_entities(
-            func.to_char(coalesce(Invoice.invoice_date, func.date(Invoice.created_at)), 'YYYY-MM').label("month"),
+            month_expr.label("month"),
             func.sum(Invoice.grand_total).label("total")
         ).group_by("month").order_by("month").all()
     else:
         six_months_ago = datetime.now() - timedelta(days=180)
         monthly_trend = db.query(
-            func.to_char(Invoice.invoice_date, 'YYYY-MM').label("month"),
+            month_expr_direct.label("month"),
             func.sum(Invoice.grand_total).label("total")
         ).filter(Invoice.invoice_date >= six_months_ago).group_by("month").order_by("month").all()
 
@@ -338,7 +375,7 @@ def get_analytics(
         "departmentDistribution": [{"name": d[0] or "Unassigned", "value": d[1]} for d in dept_dist],
         "categoryDistribution": [{"name": c[0] or "Unassigned", "value": c[1]} for c in cat_dist],
         "topVendors": [{"name": v[0] or "Unknown", "value": v[1]} for v in top_vendors],
-        "monthlyTrend": [{"month": m[0], "total": m[1]} for m in monthly_trend]
+        "monthlyTrend": [{"month": m[0] or "Unknown", "total": m[1]} for m in monthly_trend]
     }
 
 @router.get("/{invoice_id}", response_model=InvoiceResponse)
