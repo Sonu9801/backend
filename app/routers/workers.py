@@ -161,6 +161,10 @@ async def create_worker(worker_in: WorkerCreate, db: Session = Depends(get_db), 
     # Default role for workforce members is 'worker' unless specified otherwise
     if not worker.role:
         worker.role = "worker"
+    if not worker.status:
+        worker.status = "Active"
+    if not worker.employment_status:
+        worker.employment_status = "Active"
         
     # Auto-generate employee ID sequentially
     fox_workers = db.query(User.employee_id).filter(User.employee_id.like('FOX-EMP-%')).all()

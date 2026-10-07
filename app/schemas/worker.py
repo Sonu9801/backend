@@ -5,7 +5,7 @@ from pydantic import BaseModel
 class WorkerBase(CamelModel):
     employee_id: str
     name: str
-    status: str = "Offline"
+    status: str = "Active"
     current_task_id: Optional[str] = None
     hours_today: float = 0.0
     department: str

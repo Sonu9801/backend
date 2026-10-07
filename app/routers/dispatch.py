@@ -128,9 +128,36 @@ async def create_dispatch_record(dispatch_in: DispatchRecordCreate, db: Session 
     })
     return dispatch_record
 
+def resolve_dispatch_record(db: Session, record_id: str) -> Optional[DispatchRecord]:
+    from app.models.vehicle import Vehicle
+    from app.services.dispatch_service import ensure_dispatch_record_for_vehicle
+
+    clean_id = str(record_id).strip()
+    if clean_id.startswith("v_"):
+        try:
+            v_id = int(clean_id.replace("v_", ""))
+            vehicle = db.query(Vehicle).filter(Vehicle.id == v_id).first()
+            if vehicle:
+                return ensure_dispatch_record_for_vehicle(db, vehicle)
+            return db.query(DispatchRecord).filter(DispatchRecord.vehicle_id == v_id).first()
+        except Exception:
+            return None
+    
+    if clean_id.isdigit():
+        rec_id = int(clean_id)
+        rec = db.query(DispatchRecord).filter(DispatchRecord.id == rec_id).first()
+        if rec:
+            return rec
+        vehicle = db.query(Vehicle).filter(Vehicle.id == rec_id).first()
+        if vehicle:
+            return ensure_dispatch_record_for_vehicle(db, vehicle)
+        return db.query(DispatchRecord).filter(DispatchRecord.vehicle_id == rec_id).first()
+
+    return None
+
 @router.patch("/{record_id}/status", response_model=DispatchRecordResponse)
-async def update_dispatch_status(record_id: int, status: str, db: Session = Depends(get_db)):
-    record = db.query(DispatchRecord).filter(DispatchRecord.id == record_id).first()
+async def update_dispatch_status(record_id: str, status: str, db: Session = Depends(get_db)):
+    record = resolve_dispatch_record(db, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Dispatch record not found")
     record.status = status
@@ -168,8 +195,8 @@ from app.schemas.dispatch import DispatchRecordUpdate
 from datetime import datetime
 
 @router.put("/{record_id}", response_model=DispatchRecordResponse)
-async def update_dispatch_record(record_id: int, update_in: DispatchRecordUpdate, db: Session = Depends(get_db), current_user = Depends(get_current_active_user)):
-    record = db.query(DispatchRecord).filter(DispatchRecord.id == record_id).first()
+async def update_dispatch_record(record_id: str, update_in: DispatchRecordUpdate, db: Session = Depends(get_db), current_user = Depends(get_current_active_user)):
+    record = resolve_dispatch_record(db, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Dispatch record not found")
         
@@ -250,12 +277,12 @@ async def update_dispatch_record(record_id: int, update_in: DispatchRecordUpdate
 
 @router.delete("/{record_id}", status_code=status.HTTP_200_OK)
 async def delete_dispatch_record(
-    record_id: int,
+    record_id: str,
     delete_vehicle: bool = False,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_active_user)
 ):
-    record = db.query(DispatchRecord).filter(DispatchRecord.id == record_id).first()
+    record = resolve_dispatch_record(db, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Dispatch record not found")
         
@@ -277,13 +304,13 @@ async def delete_dispatch_record(
 
     from app.services.audit import log_audit_event
     await log_audit_event(
-        db, "dispatch_record_deleted", f"Dispatch Record #{record_id} deleted permanently",
+        db, "dispatch_record_deleted", f"Dispatch Record #{record.id} deleted permanently",
         edited_by=getattr(current_user, "username", "System"),
         reason="Administrative deletion", old_value=old_data, new_value=None
     )
     
     await manager.broadcast({
         "type": "DISPATCH_RECORD_DELETED",
-        "data": {"id": record_id}
+        "data": {"id": record.id}
     })
-    return {"message": "Dispatch record deleted permanently", "id": record_id}
+    return {"message": "Dispatch record deleted permanently", "id": record.id}
