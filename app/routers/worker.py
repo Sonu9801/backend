@@ -49,7 +49,7 @@ def get_dashboard_stats(
     leave_days = float(len([r for r in records if r.status == "Leave"]))
     ot_hours = round(float(sum(r.ot_hours for r in records if r.ot_hours)), 1)
     
-    sunday_worked = len([r for r in records if (r.is_sunday or "Sunday" in (r.status or "")) and r.status in ["Present", "Late", "Sunday Work", "Festival Work", "Holiday Work"]])
+    sunday_worked = len([r for r in records if (r.is_sunday or "Sunday" in (r.status or "") or "Festival" in (r.status or "") or "Holiday Work" in (r.status or "")) and r.status in ["Present", "Late", "Sunday Work", "Festival Work", "Holiday Work"]])
 
     # 2. Fetch assigned production jobs
     total_assigned = db.query(ProductionJob).filter(

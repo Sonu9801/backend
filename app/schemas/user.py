@@ -15,6 +15,13 @@ class UserResponse(BaseModel):
     email: str
     name: str
     role: str
+    employee_id: Optional[str] = None
+    department: Optional[str] = None
+    shift_type: Optional[str] = None
+    shift_start: Optional[str] = None
+    shift_end: Optional[str] = None
+    mobile_number: Optional[str] = None
+    profile_photo_url: Optional[str] = None
 
     class Config:
         from_attributes = True

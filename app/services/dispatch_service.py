@@ -10,6 +10,7 @@ def ensure_dispatch_record_for_vehicle(db: Session, vehicle: Vehicle) -> Optiona
         return None
     
     stage_lower = (vehicle.current_stage or "").lower().strip()
+    is_dispatched_stage = stage_lower in ["dispatch", "dispatched", "delivered", "rtd", "ready_to_dispatch", "readytodispatch"] or bool(vehicle.dispatch_date_time)
     
     existing_dispatches = db.query(DispatchRecord).filter(DispatchRecord.vehicle_id == vehicle.id).order_by(DispatchRecord.id.asc()).all()
     if existing_dispatches:
@@ -45,6 +46,10 @@ def ensure_dispatch_record_for_vehicle(db: Session, vehicle: Vehicle) -> Optiona
             db.refresh(existing_dispatch)
         return existing_dispatch
 
+    # Only create a brand new dispatch record if the vehicle is genuinely in a dispatch stage or has dispatch date
+    if not is_dispatched_stage:
+        return None
+
     carrier = vehicle.transport_company or vehicle.driver_name or "Self Transport"
     destination = vehicle.dealer_name or vehicle.oem_name or "Factory Outbound"
     tracking = f"TRK-{vehicle.tracking_id or vehicle.id}"
@@ -70,7 +75,14 @@ def ensure_dispatch_record_for_vehicle(db: Session, vehicle: Vehicle) -> Optiona
     return new_dispatch
 
 def sync_dispatched_vehicles(db: Session):
-    all_vehicles = db.query(Vehicle).all()
-    for v in all_vehicles:
+    dispatch_stages = ["dispatch", "dispatched", "delivered", "rtd", "ready_to_dispatch", "readytodispatch"]
+    vehicles = db.query(Vehicle).filter(
+        or_(
+            func.lower(Vehicle.current_stage).in_(dispatch_stages),
+            Vehicle.dispatch_date_time != None
+        )
+    ).all()
+    for v in vehicles:
         ensure_dispatch_record_for_vehicle(db, v)
+
 

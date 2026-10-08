@@ -282,35 +282,64 @@ async def delete_dispatch_record(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_active_user)
 ):
+    from app.models.vehicle import Vehicle
+    clean_id = str(record_id).strip()
+    target_vehicle_id = None
     record = resolve_dispatch_record(db, record_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="Dispatch record not found")
-        
-    old_data = DispatchRecordResponse.model_validate(record).model_dump()
-    vehicle = record.vehicle
+    
+    if record:
+        target_vehicle_id = record.vehicle_id
+        old_data = DispatchRecordResponse.model_validate(record).model_dump()
+        rec_id = record.id
+    else:
+        if clean_id.startswith("v_"):
+            try:
+                target_vehicle_id = int(clean_id.replace("v_", ""))
+            except Exception:
+                pass
+        elif clean_id.isdigit():
+            target_vehicle_id = int(clean_id)
+
+        if not target_vehicle_id:
+            raise HTTPException(status_code=404, detail="Dispatch record not found")
+        old_data = {"id": record_id, "vehicle_id": target_vehicle_id}
+        rec_id = record_id
+
+    vehicle = db.query(Vehicle).filter(Vehicle.id == target_vehicle_id).first() if target_vehicle_id else None
     
     if vehicle:
         if delete_vehicle:
             db.delete(vehicle)
         else:
-            # Change vehicle stage out of dispatch list so auto-sync won't recreate this record
-            vehicle.current_stage = "received"
+            # Change vehicle stage out of dispatch list and clear dispatch fields so auto-sync won't recreate this record
+            if (vehicle.current_stage or "").lower() in ["dispatch", "dispatched", "delivered", "rtd", "ready_to_dispatch", "readytodispatch"]:
+                vehicle.current_stage = "received"
             vehicle.dispatch_date_time = None
+            vehicle.truck_number = None
+            vehicle.driver_name = None
+            vehicle.driver_mobile_number = None
+            vehicle.dispatch_challan_number = None
+            vehicle.lr_number = None
+            vehicle.transport_company = None
             db.add(vehicle)
 
-    # Delete all dispatch records associated with this vehicle_id
-    db.query(DispatchRecord).filter(DispatchRecord.vehicle_id == record.vehicle_id).delete()
+    # Delete all dispatch records associated with this vehicle_id or record id
+    if target_vehicle_id:
+        db.query(DispatchRecord).filter(DispatchRecord.vehicle_id == target_vehicle_id).delete()
+    if isinstance(rec_id, int):
+        db.query(DispatchRecord).filter(DispatchRecord.id == rec_id).delete()
     db.commit()
 
     from app.services.audit import log_audit_event
     await log_audit_event(
-        db, "dispatch_record_deleted", f"Dispatch Record #{record.id} deleted permanently",
+        db, "dispatch_record_deleted", f"Dispatch Record #{rec_id} deleted permanently",
         edited_by=getattr(current_user, "username", "System"),
         reason="Administrative deletion", old_value=old_data, new_value=None
     )
     
     await manager.broadcast({
         "type": "DISPATCH_RECORD_DELETED",
-        "data": {"id": record.id}
+        "data": {"id": rec_id, "vehicle_id": target_vehicle_id}
     })
-    return {"message": "Dispatch record deleted permanently", "id": record.id}
+    return {"message": "Dispatch record deleted permanently", "id": rec_id}
+

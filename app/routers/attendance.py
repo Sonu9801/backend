@@ -133,7 +133,7 @@ async def punch_attendance(
             worker_id=worker.id,
             date=today,
             status=initial_status,
-            is_sunday=is_sun
+            is_sunday=bool(is_sun or hol)
         )
         db.add(record)
 
@@ -149,7 +149,7 @@ async def punch_attendance(
         
         if hol:
             record.status = "Festival Work"
-            record.is_sunday = False
+            record.is_sunday = True
         elif is_sun:
             record.status = "Sunday Work"
             record.is_sunday = True
@@ -170,7 +170,7 @@ async def punch_attendance(
 
         if hol:
             record.status = "Festival Work"
-            record.is_sunday = False
+            record.is_sunday = True
         elif is_sun or (record.date and record.date.weekday() == 6) or record.is_sunday:
             record.status = "Sunday Work"
             record.is_sunday = True
@@ -479,6 +479,13 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
                 else:
                     status_val = f"Holiday: {holiday_name}"
 
+            is_sun_or_fest_worked = bool(
+                rec.is_sunday or 
+                status_val in ["Sunday Work", "Festival Work", "Holiday Work"] or 
+                (holiday_name and not is_non_working) or 
+                (is_sun and not is_non_working)
+            )
+
             days_list.append({
                 "id": rec.id,
                 "date": curr.isoformat(),
@@ -492,7 +499,7 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
                 "net_working_hours": 0.0 if is_non_working else (rec.net_working_hours or 0.0),
                 "ot_hours": 0.0 if is_non_working else (rec.ot_hours or 0.0),
                 "late_minutes": rec.late_minutes or 0,
-                "is_sunday": bool(rec.is_sunday),
+                "is_sunday": is_sun_or_fest_worked,
                 "is_calendar_sunday": is_sun,
                 "has_record": True
             })
@@ -601,7 +608,7 @@ async def mark_or_update_day_attendance(
         ot_to_save = payload.ot_hours if (payload.ot_hours and payload.ot_hours > 0) else calculated_ot
         working_to_save = payload.net_working_hours if (payload.net_working_hours and payload.net_working_hours > 0) else 8.0
 
-    is_sun = bool(payload.is_sunday or payload.status == "Sunday Work")
+    is_sun = bool(payload.is_sunday or payload.status in ["Sunday Work", "Festival Work", "Holiday Work"])
 
     if not record:
         record = Attendance(
@@ -621,7 +628,10 @@ async def mark_or_update_day_attendance(
         record.punch_out = punch_out_dt
         record.net_working_hours = working_to_save
         record.ot_hours = ot_to_save
-        if payload.is_sunday is not None: record.is_sunday = payload.is_sunday
+        if payload.is_sunday is not None:
+            record.is_sunday = payload.is_sunday
+        elif payload.status in ["Sunday Work", "Festival Work", "Holiday Work"]:
+            record.is_sunday = True
 
     db.commit()
     db.refresh(record)

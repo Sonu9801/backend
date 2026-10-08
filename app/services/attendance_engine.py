@@ -59,6 +59,7 @@ class TimeEngine:
         end_h, end_m, end_s = 17, 30, 0
         late_h, late_m, late_s = 9, 30, 0
 
+        has_custom_shift = False
         if worker and getattr(worker, 'shift_start', None) and getattr(worker, 'shift_end', None):
             try:
                 s_parts = [int(p) for p in worker.shift_start.split(':')]
@@ -67,47 +68,66 @@ class TimeEngine:
                 start_s = s_parts[2] if len(s_parts) > 2 else 0
                 end_h, end_m = e_parts[0], e_parts[1]
                 end_s = e_parts[2] if len(e_parts) > 2 else 0
-                # Late threshold = shift start + 30 mins
-                late_time = (datetime(2000, 1, 1, start_h, start_m, start_s) + timedelta(minutes=30)).time()
-                late_h, late_m, late_s = late_time.hour, late_time.minute, late_time.second
+                has_custom_shift = True
             except Exception:
                 pass
-        elif punch_date < effective_date_0530:
-            start_h, start_m, start_s = 9, 30, 0
-            end_h, end_m, end_s = 18, 0, 0
-            late_h, late_m, late_s = 10, 0, 0
+
+        if not has_custom_shift:
+            if punch_date < effective_date_0530:
+                start_h, start_m, start_s = 9, 30, 0
+                end_h, end_m, end_s = 18, 0, 0
+                late_h, late_m, late_s = 10, 0, 0
+            else:
+                try:
+                    start_h, start_m, start_s = map(int, (settings.default_shift_start or '09:00:00').split(':'))
+                    end_h, end_m, end_s = map(int, (settings.default_shift_end or '17:30:00').split(':'))
+                except Exception:
+                    start_h, start_m, start_s = 9, 0, 0
+                    end_h, end_m, end_s = 17, 30, 0
+
+                try:
+                    late_h, late_m, late_s = map(int, (getattr(settings, 'present_window_end', None) or '09:30:00').split(':'))
+                except Exception:
+                    late_h, late_m, late_s = 9, 30, 0
+
+        shift_start = punch_in_local.replace(hour=start_h, minute=start_m, second=start_s, microsecond=0)
+        shift_end = punch_in_local.replace(hour=end_h, minute=end_m, second=end_s, microsecond=0)
+        if shift_end <= shift_start:
+            # Shift crosses midnight (e.g. night shift)
+            shift_end += timedelta(days=1)
+
+        if has_custom_shift:
+            # 30 mins grace period after shift start
+            late_threshold = shift_start + timedelta(minutes=30)
+            # Half-day threshold = 4.5 hours after shift start
+            half_day_threshold = shift_start + timedelta(hours=4, minutes=30)
         else:
+            late_threshold = punch_in_local.replace(hour=late_h, minute=late_m, second=late_s, microsecond=0)
             try:
-                start_h, start_m, start_s = map(int, (settings.default_shift_start or '09:00:00').split(':'))
-                end_h, end_m, end_s = map(int, (settings.default_shift_end or '17:30:00').split(':'))
+                half_day_h, half_day_m, half_day_s = map(int, (settings.half_day_start or '13:00:00').split(':'))
             except Exception:
-                start_h, start_m, start_s = 9, 0, 0
-                end_h, end_m, end_s = 17, 30, 0
-
-            try:
-                late_h, late_m, late_s = map(int, (getattr(settings, 'present_window_end', None) or '09:30:00').split(':'))
-            except Exception:
-                late_h, late_m, late_s = 9, 30, 0
-
-        try:
-            half_day_h, half_day_m, half_day_s = map(int, (settings.half_day_start or '13:00:00').split(':'))
-        except Exception:
-            half_day_h, half_day_m, half_day_s = 13, 0, 0
-            
-        shift_start = punch_in_local.replace(hour=start_h, minute=start_m, second=start_s)
-        shift_end = punch_in_local.replace(hour=end_h, minute=end_m, second=end_s)
-        late_threshold = punch_in_local.replace(hour=late_h, minute=late_m, second=late_s)
-        half_day_threshold = punch_in_local.replace(hour=half_day_h, minute=half_day_m, second=half_day_s)
+                half_day_h, half_day_m, half_day_s = 13, 0, 0
+            half_day_threshold = punch_in_local.replace(hour=half_day_h, minute=half_day_m, second=half_day_s, microsecond=0)
         
+        is_evening_shift = False
+        shift_type_str = str(getattr(worker, 'shift_type', '') or getattr(worker, 'shift_name', '') or '').lower()
+        if "evening" in shift_type_str or (has_custom_shift and start_h >= 16):
+            is_evening_shift = True
+
         late_minutes = 0
-        if punch_in_local > late_threshold:
-            late_minutes = int((punch_in_local - shift_start).total_seconds() / 60)
+        if not is_evening_shift and punch_in_local > late_threshold:
+            late_minutes = max(0, int((punch_in_local - shift_start).total_seconds() / 60))
             
         # Business Rule:
-        # Punch-in > 1:00 PM (13:00) -> Half Day
-        # Punch-in > 09:30 AM -> Late (30 mins relaxation after 09:00 AM shift start)
-        # Punch-in <= 09:30 AM -> Present
-        if punch_in_local > half_day_threshold:
+        # Evening Shift -> Always Present on punch-in, no late rule
+        # General Shift:
+        # Punch-in > half_day_threshold -> Half Day
+        # Punch-in > late_threshold -> Late
+        # Punch-in <= late_threshold -> Present
+        if is_evening_shift:
+            status = "Present"
+            late_minutes = 0
+        elif punch_in_local > half_day_threshold:
             status = "Half Day"
         elif punch_in_local > late_threshold:
             status = "Late"
@@ -127,10 +147,10 @@ class TimeEngine:
             effective_punch_in = max(punch_in_local, shift_start)
             total_seconds = (punch_out_local - effective_punch_in).total_seconds()
             
-            # Deduct 30 mins (0.5 hours) lunch break if worker was present between 01:00 PM and 01:30 PM
-            lunch_start = punch_in_local.replace(hour=13, minute=0, second=0)
-            lunch_end = punch_in_local.replace(hour=13, minute=30, second=0)
-            if effective_punch_in <= lunch_start and punch_out_local >= lunch_end:
+            # Deduct 30 mins (0.5 hours) lunch break if worker was present during mid-shift
+            mid_start = shift_start + timedelta(hours=4)
+            mid_end = shift_start + timedelta(hours=4, minutes=30)
+            if effective_punch_in <= mid_start and punch_out_local >= mid_end:
                 total_seconds -= 1800 # 30 mins in seconds
                 
             result["net_working_hours"] = max(0.0, round(total_seconds / 3600.0, 2))
@@ -138,7 +158,7 @@ class TimeEngine:
             # Re-evaluate status based on total worked hours
             shift_length_hours = (shift_end - shift_start).total_seconds() / 3600.0
             if shift_length_hours <= 0:
-                shift_length_hours = 9.0
+                shift_length_hours = 8.0
                 
             if result["net_working_hours"] < (shift_length_hours / 2):
                 result["status"] = "Absent"
@@ -146,13 +166,12 @@ class TimeEngine:
                 result["status"] = "Half Day"
             
             if punch_out_local < shift_end:
-                result["early_exit_minutes"] = int((shift_end - punch_out_local).total_seconds() / 60)
+                result["early_exit_minutes"] = max(0, int((shift_end - punch_out_local).total_seconds() / 60))
             
             if settings.enable_ot and punch_out_local > shift_end:
                 ot_start = max(shift_end, punch_in_local)
                 if punch_out_local > ot_start:
                     ot_seconds = (punch_out_local - ot_start).total_seconds()
-                    # Minimum 30 mins (6:30 PM threshold)
                     min_seconds = (settings.min_ot_minutes or 30) * 60
                     if ot_seconds >= min_seconds:
                         ot_hrs = round(ot_seconds / 3600.0, 1)
