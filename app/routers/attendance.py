@@ -369,7 +369,7 @@ def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = 
             summary["absent_days"] += 1
         elif status == "half day":
             summary["half_days"] += 1
-        elif status in ["leave", "holiday", "sunday"] and not has_worked:
+        elif "leave" in status and not has_worked:
             summary["leave_days"] += 1
         elif has_worked or status in ["present", "late", "sunday work", "festival work", "holiday work"]:
             summary["present_days"] += 1
@@ -416,14 +416,11 @@ def get_worker_monthly_summary(worker_id: int, month: str = None, db: Session = 
     summary["sunday_worked"] = len(unique_sun_fest_dates)
 
     summary["paid_holidays"] = unworked_holidays_sundays
-    summary["total_paid_days"] = round(summary["present_days"] + (summary["half_days"] * 0.5) + summary["leave_days"] + unworked_holidays_sundays, 1)
-
-    # Directly assign present_days to total_paid_days as requested by user
-    summary["present_days"] = summary["total_paid_days"]
+    summary["total_paid_days"] = min(float(last_day), round(summary["present_days"] + (summary["half_days"] * 0.5) + summary["leave_days"] + unworked_holidays_sundays, 1))
 
     total_working_days = summary["present_days"] + summary["absent_days"]
     if total_working_days > 0:
-        summary["net_attendance_percent"] = round((summary["present_days"] / (summary["present_days"] + summary["absent_days"])) * 100, 1)
+        summary["net_attendance_percent"] = min(100.0, round((summary["present_days"] / total_working_days) * 100, 1))
         
     return summary
 

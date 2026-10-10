@@ -18,6 +18,8 @@ class AdvanceCreate(BaseModel):
     worker_id: int
     amount: float
     reason: str = None
+    status: str = "Approved"
+    deducted_in_payroll: bool = True
 
 @router.get("/worker/{worker_id}")
 def get_worker_salaries(worker_id: int, db: Session = Depends(get_db)):
@@ -361,7 +363,7 @@ class PayrollUpdatePayload(BaseModel):
     bonus_amount: float = None
     deductions: float = None
     status: str = None
-    reason: str
+    reason: str = "Admin update"
 
 @router.put("/employees/{worker_id}")
 async def update_employee_payroll(worker_id: int, payload: PayrollUpdatePayload, db: Session = Depends(get_db), current_user = Depends(get_current_active_user)):
@@ -381,6 +383,7 @@ async def update_employee_payroll(worker_id: int, payload: PayrollUpdatePayload,
             sunday_amount=payload.sunday_amount or 0.0,
             bonus_amount=payload.bonus_amount or 0.0,
             deductions=payload.deductions or 0.0,
+            final_salary=(payload.base_salary or 0.0) + (payload.ot_amount or 0.0) + (payload.sunday_amount or 0.0) + (payload.bonus_amount or 0.0) - (payload.deductions or 0.0),
             status=payload.status or "Draft"
         )
         db.add(pr)
@@ -401,7 +404,7 @@ async def update_employee_payroll(worker_id: int, payload: PayrollUpdatePayload,
         if payload.deductions is not None: pr.deductions = payload.deductions
         if payload.status is not None: pr.status = payload.status
         
-        pr.final_salary = pr.base_salary + pr.ot_amount + pr.sunday_amount + pr.bonus_amount - pr.deductions
+        pr.final_salary = (pr.base_salary or 0.0) + (pr.ot_amount or 0.0) + (pr.sunday_amount or 0.0) + (pr.bonus_amount or 0.0) - (pr.deductions or 0.0)
         db.commit()
         db.refresh(pr)
         
@@ -416,7 +419,7 @@ async def update_employee_payroll(worker_id: int, payload: PayrollUpdatePayload,
     from app.services.audit import log_audit_event
     await log_audit_event(
         db, "payroll_updated", f"Payroll updated for worker {worker_id} ({payload.month})",
-        edited_by=getattr(current_user, "username", "System"),
+        edited_by=getattr(current_user, "name", getattr(current_user, "email", "System")),
         reason=payload.reason, old_value=old_data, new_value=new_data, worker_id=worker_id
     )
     
@@ -472,7 +475,9 @@ def create_advance(req: AdvanceCreate, db: Session = Depends(get_db)):
     adv = AdvanceRequest(
         worker_id=req.worker_id,
         amount=req.amount,
-        reason=req.reason
+        reason=req.reason,
+        status=req.status or "Approved",
+        deducted_in_payroll=req.deducted_in_payroll
     )
     db.add(adv)
     db.commit()
