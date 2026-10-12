@@ -55,6 +55,17 @@ class VehicleBase(CamelModel):
     dispatch_coordinates: Optional[str] = None
     arrival_coordinates: Optional[str] = None
 
+    @field_validator(
+        "dispatch_date_time", "expected_arrival_date_time", "received_at", 
+        "estimated_delivery", "verified_at", "arrival_time", "submitted_at", "gate_entry_time",
+        mode="before", check_fields=False
+    )
+    @classmethod
+    def empty_str_to_none_vehicle_base(cls, v: Any) -> Any:
+        if v == "" or v == "null":
+            return None
+        return v
+
     @field_validator("verification_status", mode="before")
     @classmethod
     def set_default_verification_status(cls, v: Any) -> str:
@@ -116,6 +127,17 @@ class VehicleUpdate(CamelModel):
     arrival_location: Optional[str] = None
     dispatch_coordinates: Optional[str] = None
     arrival_coordinates: Optional[str] = None
+
+    @field_validator(
+        "dispatch_date_time", "expected_arrival_date_time", "received_at", 
+        "estimated_delivery", "verified_at", "arrival_time", "submitted_at", "gate_entry_time",
+        mode="before", check_fields=False
+    )
+    @classmethod
+    def empty_str_to_none_vehicle_update(cls, v: Any) -> Any:
+        if v == "" or v == "null":
+            return None
+        return v
 
 class VehicleResponse(VehicleBase):
     id: int

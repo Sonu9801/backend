@@ -82,13 +82,21 @@ def get_dispatch_records(
 
     result_items = []
     for record in items:
-        rec_dict = DispatchRecordResponse.model_validate(record).model_dump()
+        rec_dict = DispatchRecordResponse.model_validate(record).model_dump(by_alias=True)
+        rec_dict["vehicleId"] = record.vehicle_id
+        rec_dict["vehicle_id"] = record.vehicle_id
+        rec_dict["trackingNumber"] = record.tracking_number
+        if record.scheduled_date:
+            rec_dict["scheduledDate"] = record.scheduled_date.isoformat()
+            rec_dict["dispatchDate"] = record.scheduled_date.isoformat()
+
         if record.vehicle:
             v = record.vehicle
             rec_dict["vehicleNumber"] = v.vehicle_number
             rec_dict["chassisNumber"] = v.chassis_number or v.vin or f"CH-{v.id}"
             rec_dict["oemName"] = v.oem_name
             rec_dict["vehicleModel"] = v.vehicle_model
+            rec_dict["modelName"] = v.vehicle_model
             rec_dict["productCategory"] = v.product_category
             rec_dict["vin"] = v.vin
             rec_dict["driverName"] = v.driver_name
@@ -98,11 +106,20 @@ def get_dispatch_records(
             rec_dict["invoiceNumber"] = v.invoice_number
             rec_dict["dispatchChallanNumber"] = v.dispatch_challan_number
             rec_dict["trackingId"] = v.tracking_id or f"TRK-{v.id}"
+            rec_dict["documentsUrl"] = v.documents_url
+            rec_dict["remarks"] = v.remarks
 
             # Fallbacks
             rec_dict["vehicle_number"] = v.vehicle_number
             rec_dict["chassis_number"] = v.chassis_number or v.vin
             rec_dict["oem_name"] = v.oem_name
+            rec_dict["driver_name"] = v.driver_name
+            rec_dict["driver_phone"] = v.driver_mobile_number
+            rec_dict["truck_number"] = v.truck_number
+            rec_dict["lr_number"] = v.lr_number
+            rec_dict["invoice_number"] = v.invoice_number
+            rec_dict["dispatch_challan_number"] = v.dispatch_challan_number
+            rec_dict["documents_url"] = v.documents_url
         result_items.append(rec_dict)
 
     return {
@@ -209,13 +226,15 @@ async def update_dispatch_record(record_id: str, update_in: DispatchRecordUpdate
         "vehicle_number": update_data.pop("vehicle_number", None),
         "oem_name": update_data.pop("oem_name", None),
         "driver_name": update_data.pop("driver_name", None),
-        "driver_mobile_number": update_data.pop("driver_phone", None),
+        "driver_mobile_number": update_data.pop("driver_phone", None) or update_data.pop("driver_mobile_number", None),
         "truck_number": update_data.pop("truck_number", None),
         "lr_number": update_data.pop("lr_number", None),
         "invoice_number": update_data.pop("invoice_number", None),
         "dispatch_challan_number": update_data.pop("dispatch_challan_number", None),
         "tracking_id": update_data.pop("tracking_id", None),
         "dispatch_date_time": update_data.get("scheduled_date"),
+        "transport_company": update_data.get("carrier") or update_data.pop("transport_company", None),
+        "dealer_name": update_data.get("destination") or update_data.pop("dealer_name", None),
     }
 
     was_delivered = record.status.lower() != "delivered"
@@ -260,20 +279,45 @@ async def update_dispatch_record(record_id: str, update_in: DispatchRecordUpdate
     db.commit()
     db.refresh(record)
     
-    new_data = DispatchRecordResponse.model_validate(record).model_dump()
+    res_dict = DispatchRecordResponse.model_validate(record).model_dump()
+    if record.vehicle:
+        v = record.vehicle
+        res_dict["vehicleNumber"] = v.vehicle_number
+        res_dict["chassisNumber"] = v.chassis_number or v.vin or f"CH-{v.id}"
+        res_dict["oemName"] = v.oem_name
+        res_dict["vehicleModel"] = v.vehicle_model
+        res_dict["productCategory"] = v.product_category
+        res_dict["vin"] = v.vin
+        res_dict["driverName"] = v.driver_name
+        res_dict["driverPhone"] = v.driver_mobile_number
+        res_dict["truckNumber"] = v.truck_number
+        res_dict["lrNumber"] = v.lr_number
+        res_dict["invoiceNumber"] = v.invoice_number
+        res_dict["dispatchChallanNumber"] = v.dispatch_challan_number
+        res_dict["trackingId"] = v.tracking_id or f"TRK-{v.id}"
+        res_dict["vehicle_number"] = v.vehicle_number
+        res_dict["chassis_number"] = v.chassis_number or v.vin
+        res_dict["oem_name"] = v.oem_name
+        res_dict["driver_name"] = v.driver_name
+        res_dict["driver_phone"] = v.driver_mobile_number
+        res_dict["truck_number"] = v.truck_number
+        res_dict["lr_number"] = v.lr_number
+        res_dict["invoice_number"] = v.invoice_number
+        res_dict["dispatch_challan_number"] = v.dispatch_challan_number
+        res_dict["tracking_id"] = v.tracking_id
+
     from app.services.audit import log_audit_event
     await log_audit_event(
         db, "dispatch_record_updated", f"Dispatch Record #{record.id} updated",
         edited_by=getattr(current_user, "username", "System"),
-        reason=reason, old_value=old_data, new_value=new_data
+        reason=reason, old_value=old_data, new_value=res_dict
     )
     
-    response_data = DispatchRecordResponse.model_validate(record).model_dump()
     await manager.broadcast({
         "type": "DISPATCH_RECORD_UPDATED",
-        "data": response_data
+        "data": res_dict
     })
-    return record
+    return res_dict
 
 @router.delete("/{record_id}", status_code=status.HTTP_200_OK)
 async def delete_dispatch_record(

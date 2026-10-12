@@ -196,7 +196,10 @@ async def punch_attendance(
 
 @router.get("/worker/{worker_id}/summary")
 def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
-    today = datetime.now().date()
+    now = datetime.now()
+    today = now.date()
+    is_evening = now.hour >= 17
+
     record = db.query(Attendance).filter(
         Attendance.worker_id == worker_id, 
         Attendance.date == today
@@ -204,7 +207,7 @@ def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
 
     if not record:
         return {
-            "status": "Not Punched In",
+            "status": "Absent" if is_evening else "Not Punched In",
             "net_working_hours": 0.0,
             "break_time": 0.0,
             "late_minutes": 0,
@@ -213,8 +216,12 @@ def get_worker_summary(worker_id: int, db: Session = Depends(get_db)):
             "punch_out": None
         }
 
+    status_val = record.status or "Not Punched In"
+    if status_val in ["Not Punched In", "Not Punched"] and is_evening:
+        status_val = "Absent"
+
     return {
-        "status": record.status or "Not Punched In",
+        "status": status_val,
         "net_working_hours": record.net_working_hours or 0.0,
         "break_time": record.break_time or 0.0,
         "late_minutes": record.late_minutes or 0,
@@ -252,7 +259,9 @@ def get_worker_history(worker_id: int, month: Optional[str] = None, db: Session 
                 has_worked = st_lower in ["present", "late", "half day", "sunday work", "festival work", "holiday work"] or (r.net_working_hours and r.net_working_hours > 0)
                 
                 display_status = st
-                if is_hol and has_worked and "festival" not in st_lower and "holiday" not in st_lower:
+                if display_status in ["Not Punched", "Not Punched In"] and (r_date < today or (r_date == today and datetime.now().hour >= 17)):
+                    display_status = "Absent"
+                elif is_hol and has_worked and "festival" not in st_lower and "holiday" not in st_lower:
                     display_status = "Festival Work"
                 elif is_sun and has_worked and "sunday" not in st_lower:
                     display_status = "Sunday Work"
@@ -291,7 +300,9 @@ def get_worker_history(worker_id: int, month: Optional[str] = None, db: Session 
         has_worked = st_lower in ["present", "late", "half day", "sunday work", "festival work", "holiday work"] or (r.net_working_hours and r.net_working_hours > 0)
         
         display_status = st
-        if is_hol and has_worked and "festival" not in st_lower and "holiday" not in st_lower:
+        if display_status in ["Not Punched", "Not Punched In"] and (r_date < today or (r_date == today and datetime.now().hour >= 17)):
+            display_status = "Absent"
+        elif is_hol and has_worked and "festival" not in st_lower and "holiday" not in st_lower:
             display_status = "Festival Work"
         elif is_sun and has_worked and "sunday" not in st_lower:
             display_status = "Sunday Work"
@@ -467,8 +478,12 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
         holiday_name = holiday_map.get(curr)
 
         if rec:
-            is_non_working = rec.status in ["Absent", "Leave", "Holiday", "Not Punched", "Sunday"]
             status_val = rec.status or ("Sunday Work" if rec.is_sunday else ("Holiday" if is_sun else "Present"))
+            is_evening = datetime.now().hour >= 17
+            if status_val in ["Not Punched", "Not Punched In"] and (curr < today or (curr == today and is_evening)):
+                status_val = "Absent"
+
+            is_non_working = status_val in ["Absent", "Leave", "Holiday", "Not Punched", "Sunday"]
             if holiday_name:
                 if rec.punch_in or (rec.net_working_hours and rec.net_working_hours > 0) or rec.status in ["Present", "Half Day", "Sunday Work", "Festival Work", "Holiday Work"]:
                     status_val = "Festival Work"
@@ -501,12 +516,18 @@ def get_worker_full_month_logs(worker_id: int, month: Optional[str] = None, db: 
                 "has_record": True
             })
         else:
+            is_evening = datetime.now().hour >= 17
             if holiday_name:
                 default_status = f"Holiday: {holiday_name}"
             elif is_sun:
                 default_status = "Holiday"
             else:
-                default_status = "Not Punched" if curr <= today else "Upcoming"
+                if curr < today:
+                    default_status = "Absent"
+                elif curr == today:
+                    default_status = "Absent" if is_evening else "Not Punched"
+                else:
+                    default_status = "Upcoming"
             days_list.append({
                 "id": None,
                 "date": curr.isoformat(),
@@ -760,6 +781,11 @@ def get_detailed_logs(
             in_log = next((lg for lg in w_logs if lg.action == "Punch In" and lg.timestamp >= r.punch_in), None) if r.punch_in else None
             out_log = next((lg for lg in w_logs if lg.action == "Punch Out" and lg.timestamp >= r.punch_out), None) if r.punch_out else None
 
+            rec_status = r.status
+            if rec_status in ["Not Punched", "Not Punched In"]:
+                if r.date and (r.date < today or (r.date == today and datetime.now().hour >= 17)):
+                    rec_status = "Absent"
+
             results.append({
                 "id": r.id,
                 "worker_id": worker.id,
@@ -769,7 +795,7 @@ def get_detailed_logs(
                 "date": r.date.isoformat() if r.date else None,
                 "punch_in": to_ist(r.punch_in).isoformat() if r.punch_in else None,
                 "punch_out": to_ist(r.punch_out).isoformat() if r.punch_out else None,
-                "status": r.status,
+                "status": rec_status,
                 "net_working_hours": r.net_working_hours,
                 "ot_hours": r.ot_hours,
                 "late_minutes": r.late_minutes,
@@ -1086,11 +1112,12 @@ def get_today_attendance_records(
     today_records = db.query(Attendance).filter(Attendance.date == today).all()
     records_by_worker = {r.worker_id: r for r in today_records}
     
+    is_evening = now.hour >= 17
     result = []
     for w in all_workers:
         att = records_by_worker.get(w.id)
         
-        status = "Absent"
+        status = "Absent" if is_evening else "Not Punched In"
         punch_in = None
         punch_out = None
         late_minutes = 0
@@ -1106,8 +1133,10 @@ def get_today_attendance_records(
             working_hours = att.net_working_hours or 0.0
             if status == "Present" and late_minutes > 0:
                 status = "Late"
-        elif w.status and w.status.lower() in ["online", "working", "active"]:
-            status = "Present"
+            elif status in ["Not Punched", "Not Punched In"]:
+                status = "Absent" if is_evening else "Not Punched In"
+        else:
+            status = "Absent" if is_evening else "Not Punched In"
             
         result.append({
             "id": w.id,

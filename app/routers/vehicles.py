@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth import get_current_active_user
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from datetime import datetime
 from app.database import get_db
 from app.models.vehicle import Vehicle
 from app.models.user import User
@@ -23,11 +24,17 @@ def get_vehicles(
     if current_user.role == "oem" and current_user.dealer_name:
         query = query.filter(Vehicle.oem_name.ilike(f"%{current_user.dealer_name}%"))
     if search:
+        s = f"%{search.strip()}%"
         query = query.filter(
             or_(
-                Vehicle.vehicle_number.ilike(f"%{search}%"),
-                Vehicle.oem_name.ilike(f"%{search}%"),
-                Vehicle.stage.ilike(f"%{search}%"),
+                Vehicle.vehicle_number.ilike(s),
+                Vehicle.chassis_number.ilike(s),
+                Vehicle.vin.ilike(s),
+                Vehicle.tracking_id.ilike(s),
+                Vehicle.oem_name.ilike(s),
+                Vehicle.vehicle_model.ilike(s),
+                Vehicle.current_stage.ilike(s),
+                Vehicle.dealer_name.ilike(s),
             )
         )
     total = query.count()
@@ -225,6 +232,18 @@ async def update_vehicle_stage(
     progress: Optional[int] = Body(None),
     priority: Optional[str] = Body(None),
     reason: Optional[str] = Body(None),
+    driver_name: Optional[str] = Body(None),
+    driver_mobile_number: Optional[str] = Body(None),
+    transport_company: Optional[str] = Body(None),
+    truck_number: Optional[str] = Body(None),
+    lr_number: Optional[str] = Body(None),
+    invoice_number: Optional[str] = Body(None),
+    dispatch_challan_number: Optional[str] = Body(None),
+    dispatch_date_time: Optional[datetime] = Body(None),
+    dealer_name: Optional[str] = Body(None),
+    destination: Optional[str] = Body(None),
+    remarks: Optional[str] = Body(None),
+    documents_url: Optional[str] = Body(None),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_active_user)
 ):
@@ -249,6 +268,31 @@ async def update_vehicle_stage(
         vehicle.progress_percent = 100
     elif stage.lower() in ["dispatched", "dispatch", "delivered"]:
         vehicle.progress_percent = 100
+
+    if driver_name is not None:
+        vehicle.driver_name = driver_name
+    if driver_mobile_number is not None:
+        vehicle.driver_mobile_number = driver_mobile_number
+    if transport_company is not None:
+        vehicle.transport_company = transport_company
+    if truck_number is not None:
+        vehicle.truck_number = truck_number
+    if lr_number is not None:
+        vehicle.lr_number = lr_number
+    if invoice_number is not None:
+        vehicle.invoice_number = invoice_number
+    if dispatch_challan_number is not None:
+        vehicle.dispatch_challan_number = dispatch_challan_number
+    if dispatch_date_time is not None:
+        vehicle.dispatch_date_time = dispatch_date_time
+    if dealer_name is not None:
+        vehicle.dealer_name = dealer_name
+    elif destination is not None:
+        vehicle.dealer_name = destination
+    if remarks is not None:
+        vehicle.remarks = remarks
+    if documents_url is not None:
+        vehicle.documents_url = documents_url
         
     db.commit()
     db.refresh(vehicle)

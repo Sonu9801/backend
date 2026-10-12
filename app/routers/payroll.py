@@ -72,8 +72,9 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
         Attendance.date <= end_date
     ).all()
     
-    # We also need salary profiles to compute amounts
+    # We also need salary profiles and payroll records to compute amounts
     salary_profiles = {sp.worker_id: sp for sp in db.query(SalaryProfile).all()}
+    records = {pr.worker_id: pr for pr in db.query(PayrollRecord).filter(PayrollRecord.month == month).all()}
     workers = {w.id: w for w in db.query(User).filter(User.employee_id.isnot(None)).all()}
     
     total_ot_cost = 0.0
@@ -120,11 +121,18 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
     # Compute financials
     for wid, stats in worker_stats.items():
         sp = salary_profiles.get(wid)
+        pr = records.get(wid)
         w = workers.get(wid)
-        if not sp or not w:
+        if not w:
             continue
             
-        sp_base = sp.monthly_salary or 20000.0
+        if pr and pr.base_salary:
+            sp_base = pr.base_salary
+        elif sp and sp.monthly_salary:
+            sp_base = sp.monthly_salary
+        else:
+            sp_base = 20000.0
+
         calculated_ot_rate = (sp_base / 30.0) / 8.0
         ot_rate = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calculated_ot_rate
         sunday_rate = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else calculated_ot_rate
@@ -132,11 +140,7 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
         ot_amount = stats["ot_hours"] * ot_rate
         sunday_amount = stats["sunday_hours"] * sunday_rate
         
-        base = 0.0
-        if sp.salary_type == "Monthly":
-            base = sp.monthly_salary or 0.0
-        elif sp.salary_type == "DailyWage":
-            base = (sp.daily_wage or 0.0) * (stats["present"] + (stats["half"] * 0.5))
+        base = sp_base
             
         total_salary = base + ot_amount + sunday_amount
         
@@ -311,8 +315,16 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
 
         # Override / Sync with DB record
         if pr:
-            ot_amount = pr.ot_amount if pr.ot_amount is not None else ot_amount
-            sunday_amount = pr.sunday_amount if pr.sunday_amount is not None else sunday_amount
+            if (pr.status or "").lower() == "paid":
+                # Locked paid records keep frozen amounts
+                ot_amount = pr.ot_amount if pr.ot_amount is not None else ot_amount
+                sunday_amount = pr.sunday_amount if pr.sunday_amount is not None else sunday_amount
+            else:
+                # In Draft status:
+                # ot_amount and sunday_amount must recalculate to match the active base_salary and attendance hours
+                pr.ot_amount = round(ot_amount, 2)
+                pr.sunday_amount = round(sunday_amount, 2)
+
             bonus_amount = pr.bonus_amount if pr.bonus_amount is not None else 0.0
             deductions = pr.deductions if pr.deductions is not None else deductions
             status = pr.status or "Draft"
@@ -320,6 +332,8 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
             final_salary = round(total_salary + bonus_amount - deductions, 2)
             pr.final_salary = final_salary
             pr.base_salary = base_salary
+            pr.ot_amount = round(ot_amount, 2)
+            pr.sunday_amount = round(sunday_amount, 2)
             db.add(pr)
         else:
             status = "Draft"
@@ -370,6 +384,16 @@ async def update_employee_payroll(worker_id: int, payload: PayrollUpdatePayload,
     if current_user.role not in ["owner", "admin", "manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
         
+    # Sync master SalaryProfile if base_salary is provided
+    if payload.base_salary is not None:
+        sp = db.query(SalaryProfile).filter(SalaryProfile.worker_id == worker_id).first()
+        if sp:
+            sp.monthly_salary = payload.base_salary
+            db.add(sp)
+        else:
+            sp = SalaryProfile(worker_id=worker_id, monthly_salary=payload.base_salary, salary_type="Monthly")
+            db.add(sp)
+
     pr = db.query(PayrollRecord).filter(PayrollRecord.worker_id == worker_id, PayrollRecord.month == payload.month).first()
     
     old_data = {}
@@ -393,6 +417,7 @@ async def update_employee_payroll(worker_id: int, payload: PayrollUpdatePayload,
         old_data = {
             "base_salary": pr.base_salary,
             "ot_amount": pr.ot_amount,
+            "sunday_amount": pr.sunday_amount,
             "bonus_amount": pr.bonus_amount,
             "deductions": pr.deductions,
             "status": pr.status
@@ -411,6 +436,7 @@ async def update_employee_payroll(worker_id: int, payload: PayrollUpdatePayload,
     new_data = {
         "base_salary": pr.base_salary,
         "ot_amount": pr.ot_amount,
+        "sunday_amount": pr.sunday_amount,
         "bonus_amount": pr.bonus_amount,
         "deductions": pr.deductions,
         "status": pr.status

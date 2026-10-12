@@ -34,10 +34,14 @@ def ensure_dispatch_record_for_vehicle(db: Session, vehicle: Vehicle) -> Optiona
             existing_dispatch.scheduled_date = vehicle.dispatch_date_time
             updated = True
 
-        if stage_lower in ["dispatched", "delivered"] and existing_dispatch.status != "dispatched":
+        if vehicle.lr_number and existing_dispatch.tracking_number != vehicle.lr_number:
+            existing_dispatch.tracking_number = vehicle.lr_number
+            updated = True
+
+        if stage_lower in ["dispatched", "dispatch", "delivered"] and existing_dispatch.status != "dispatched":
             existing_dispatch.status = "dispatched"
             updated = True
-        elif stage_lower in ["dispatch", "rtd"] and existing_dispatch.status == "pending":
+        elif stage_lower in ["rtd", "ready_to_dispatch", "readytodispatch"] and existing_dispatch.status == "pending":
             existing_dispatch.status = "scheduled"
             updated = True
 
@@ -52,11 +56,11 @@ def ensure_dispatch_record_for_vehicle(db: Session, vehicle: Vehicle) -> Optiona
 
     carrier = vehicle.transport_company or vehicle.driver_name or "Self Transport"
     destination = vehicle.dealer_name or vehicle.oem_name or "Factory Outbound"
-    tracking = f"TRK-{vehicle.tracking_id or vehicle.id}"
+    tracking = vehicle.lr_number or (vehicle.tracking_id if str(vehicle.tracking_id).startswith("TRK-") else f"TRK-{vehicle.tracking_id or vehicle.id}")
     
-    if stage_lower in ["dispatched", "delivered"]:
+    if stage_lower in ["dispatched", "dispatch", "delivered"]:
         init_status = "dispatched"
-    elif stage_lower in ["dispatch", "rtd"]:
+    elif stage_lower in ["rtd", "ready_to_dispatch", "readytodispatch"]:
         init_status = "scheduled"
     else:
         init_status = "pending"

@@ -1,5 +1,6 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
+from pydantic import field_validator
 from app.schemas.base import CamelModel
 
 class DispatchRecordBase(CamelModel):
@@ -31,16 +32,28 @@ class DispatchRecordUpdate(CamelModel):
     oem_name: Optional[str] = None
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
+    driver_mobile_number: Optional[str] = None
     truck_number: Optional[str] = None
     lr_number: Optional[str] = None
     invoice_number: Optional[str] = None
     dispatch_challan_number: Optional[str] = None
+    transport_company: Optional[str] = None
+    dealer_name: Optional[str] = None
     reason: Optional[str] = None
     delivered_time: Optional[datetime] = None
     receiver_name: Optional[str] = None
     receiver_signature: Optional[str] = None
     delivery_photo: Optional[str] = None
     delivery_remarks: Optional[str] = None
+    documents_url: Optional[str] = None
+    remarks: Optional[str] = None
+
+    @field_validator("scheduled_date", "delivered_time", mode="before", check_fields=False)
+    @classmethod
+    def empty_str_to_none_dispatch(cls, v: Any) -> Any:
+        if v == "" or v == "null":
+            return None
+        return v
 
 class DispatchRecordResponse(DispatchRecordBase):
     id: int
@@ -57,4 +70,6 @@ class DispatchRecordResponse(DispatchRecordBase):
     invoice_number: Optional[str] = None
     dispatch_challan_number: Optional[str] = None
     tracking_id: Optional[str] = None
+    documents_url: Optional[str] = None
+    remarks: Optional[str] = None
 
