@@ -9,6 +9,7 @@ from app.models.attendance import AttendanceLog, Attendance
 from app.models.salary_profile import SalaryProfile
 from app.models.holiday import Holiday
 from app.models.payroll import AdvanceRequest, PayrollRecord
+from app.models.attendance_settings import AttendanceSettings
 from datetime import datetime, date, timedelta
 import calendar
 
@@ -118,6 +119,10 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
         except Exception as e:
             print(e)
 
+    att_settings = db.query(AttendanceSettings).first()
+    ot_multiplier = (att_settings.ot_rate_multiplier if (att_settings and att_settings.ot_rate_multiplier is not None) else 1.5) if (att_settings and att_settings.enable_ot) else 0.0
+    sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 2.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
+
     # Compute financials
     for wid, stats in worker_stats.items():
         sp = salary_profiles.get(wid)
@@ -133,9 +138,10 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
         else:
             sp_base = 20000.0
 
-        calculated_ot_rate = (sp_base / 30.0) / 8.0
+        calculated_ot_rate = ((sp_base / 30.0) / 8.0) * ot_multiplier
+        calculated_sunday_rate = ((sp_base / 30.0) / 8.0) * sunday_multiplier
         ot_rate = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calculated_ot_rate
-        sunday_rate = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else calculated_ot_rate
+        sunday_rate = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else calculated_sunday_rate
 
         ot_amount = stats["ot_hours"] * ot_rate
         sunday_amount = stats["sunday_hours"] * sunday_rate
@@ -245,9 +251,14 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
         else:
             base_salary = active_monthly_salary
 
+        att_settings = db.query(AttendanceSettings).first()
+        ot_multiplier = (att_settings.ot_rate_multiplier if (att_settings and att_settings.ot_rate_multiplier is not None) else 1.5) if (att_settings and att_settings.enable_ot) else 0.0
+        sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 2.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
+
         daily_rate = base_salary / 30.0
         hourly_rate = daily_rate / 8.0
-        sunday_hourly_rate = hourly_rate
+        ot_hourly_rate = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else (hourly_rate * ot_multiplier)
+        sunday_hourly_rate = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else (hourly_rate * sunday_multiplier)
 
         holidays_db = db.query(Holiday).filter(
             Holiday.date >= start_date,
@@ -294,7 +305,7 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
                     elif is_sun or s == "sunday": sunday_count += 1.0
                     elif curr_d <= date.today(): absent += 1.0
 
-                ot_amount += ot_h * hourly_rate
+                ot_amount += ot_h * ot_hourly_rate
             else:
                 if is_hol:
                     holiday_count += 1.0
@@ -579,9 +590,14 @@ def get_payroll_full_analytics(db: Session = Depends(get_db)):
                 continue
                 
             sp_base = sp.monthly_salary or 20000.0
-            calc_ot_rate = (sp_base / 30.0) / 8.0
+            att_settings = db.query(AttendanceSettings).first()
+            ot_multiplier = (att_settings.ot_rate_multiplier if (att_settings and att_settings.ot_rate_multiplier is not None) else 1.5) if (att_settings and att_settings.enable_ot) else 0.0
+            sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 2.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
+
+            calc_ot_rate = ((sp_base / 30.0) / 8.0) * ot_multiplier
+            calc_sun_rate = ((sp_base / 30.0) / 8.0) * sunday_multiplier
             ot_r = sp.ot_rate_per_hour if (sp and sp.ot_rate_per_hour and sp.ot_rate_per_hour > 0) else calc_ot_rate
-            sun_r = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else calc_ot_rate
+            sun_r = sp.sunday_rate_per_hour if (sp and sp.sunday_rate_per_hour and sp.sunday_rate_per_hour > 0) else calc_sun_rate
 
             w_ot = stats["ot_hrs"] * ot_r
             w_sun = stats["sunday_hrs"] * sun_r

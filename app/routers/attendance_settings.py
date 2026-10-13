@@ -31,6 +31,80 @@ def update_settings(settings_in: AttendanceSettingsUpdate, db: Session = Depends
     db.refresh(settings)
     return settings
 
+from pydantic import BaseModel
+from typing import Optional
+from app.models.user import User
+
+class BulkShiftUpdateRequest(BaseModel):
+    shift_start: str
+    shift_end: str
+    shift_type: Optional[str] = "General Shift"
+    present_window_end: Optional[str] = None
+    half_day_start: Optional[str] = None
+    update_global_settings: Optional[bool] = True
+
+@router.post("/apply-to-all-workers")
+def apply_shift_to_all_workers(
+    payload: BulkShiftUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Applies new shift timings to all workers in one go and updates global attendance rules.
+    """
+    s_start = payload.shift_start
+    s_end = payload.shift_end
+    if len(s_start) == 5:
+        s_start += ":00"
+    if len(s_end) == 5:
+        s_end += ":00"
+
+    # Update global settings if requested
+    if payload.update_global_settings:
+        settings = db.query(AttendanceSettings).first()
+        if not settings:
+            settings = AttendanceSettings()
+            db.add(settings)
+        settings.default_shift_start = s_start
+        settings.default_shift_end = s_end
+
+        if payload.present_window_end:
+            pw = payload.present_window_end
+            settings.present_window_end = pw + ":00" if len(pw) == 5 else pw
+        else:
+            try:
+                h, m = int(s_start.split(":")[0]), int(s_start.split(":")[1])
+                m_total = h * 60 + m + 30
+                settings.present_window_end = f"{(m_total // 60) % 24:02d}:{m_total % 60:02d}:00"
+            except Exception:
+                pass
+
+        if payload.half_day_start:
+            hd = payload.half_day_start
+            settings.half_day_start = hd + ":00" if len(hd) == 5 else hd
+        else:
+            try:
+                h, m = int(s_start.split(":")[0]), int(s_start.split(":")[1])
+                m_total = h * 60 + m + 270 # 4.5 hours
+                settings.half_day_start = f"{(m_total // 60) % 24:02d}:{m_total % 60:02d}:00"
+            except Exception:
+                pass
+
+    # Update all workers
+    updated_count = db.query(User).filter(User.role == "worker").update({
+        User.shift_start: s_start,
+        User.shift_end: s_end,
+        User.shift_type: payload.shift_type
+    })
+    db.commit()
+
+    return {
+        "success": True,
+        "message": f"Successfully updated shift timings for {updated_count} workers to {payload.shift_start} - {payload.shift_end}",
+        "updated_workers": updated_count,
+        "shift_start": s_start,
+        "shift_end": s_end
+    }
+
 from datetime import date
 from typing import List
 from app.models.shift import Shift

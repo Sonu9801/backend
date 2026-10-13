@@ -614,14 +614,34 @@ async def mark_or_update_day_attendance(
         working_to_save = 0.0
         ot_to_save = 0.0
     else:
-        # Auto-calculate OT ONLY if punch_out is at or after 18:00 (6:00 PM threshold - 30m after 17:30 shift end)
+        # Auto-calculate OT using AttendanceSettings rules
         calculated_ot = 0.0
-        if punch_in_dt and punch_out_dt:
-            min_ot_start_dt = datetime.combine(date_val, time(18, 0))
-            shift_end_dt = datetime.combine(date_val, time(17, 30))
+        settings = db.query(AttendanceSettings).first()
+        if settings and settings.enable_ot and punch_in_dt and punch_out_dt:
+            ot_start_h, ot_start_m = 18, 30
+            if getattr(settings, 'ot_start_time', None):
+                try:
+                    p = [int(x) for x in settings.ot_start_time.split(':')]
+                    ot_start_h, ot_start_m = p[0], p[1]
+                except Exception:
+                    pass
+            min_ot_start_dt = datetime.combine(date_val, time(ot_start_h, ot_start_m))
+
+            shift_end_h, shift_end_m = 18, 0
+            if getattr(settings, 'default_shift_end', None):
+                try:
+                    p = [int(x) for x in settings.default_shift_end.split(':')]
+                    shift_end_h, shift_end_m = p[0], p[1]
+                except Exception:
+                    pass
+            shift_end_dt = datetime.combine(date_val, time(shift_end_h, shift_end_m))
+
             if punch_out_dt >= min_ot_start_dt:
                 ot_seconds = (punch_out_dt - shift_end_dt).total_seconds()
-                calculated_ot = round(ot_seconds / 3600.0, 1)
+                min_sec = (settings.min_ot_minutes or 30) * 60
+                if ot_seconds >= min_sec:
+                    ot_val = round(ot_seconds / 3600.0, 1)
+                    calculated_ot = min(ot_val, float(settings.max_ot_hours or 8.0))
 
         ot_to_save = payload.ot_hours if (payload.ot_hours and payload.ot_hours > 0) else calculated_ot
         working_to_save = payload.net_working_hours if (payload.net_working_hours and payload.net_working_hours > 0) else 8.0

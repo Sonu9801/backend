@@ -168,14 +168,21 @@ class TimeEngine:
             if punch_out_local < shift_end:
                 result["early_exit_minutes"] = max(0, int((shift_end - punch_out_local).total_seconds() / 60))
             
-            if settings.enable_ot and punch_out_local > shift_end:
-                ot_start = max(shift_end, punch_in_local)
-                if punch_out_local > ot_start:
-                    ot_seconds = (punch_out_local - ot_start).total_seconds()
+            if settings and settings.enable_ot and punch_out_local > shift_end:
+                ot_start_threshold = shift_end
+                if getattr(settings, 'ot_start_time', None):
+                    try:
+                        parts = [int(p) for p in settings.ot_start_time.split(':')]
+                        ot_start_threshold = punch_in_local.replace(hour=parts[0], minute=parts[1], second=0, microsecond=0)
+                    except Exception:
+                        ot_start_threshold = shift_end
+
+                if punch_out_local >= ot_start_threshold:
+                    ot_seconds = (punch_out_local - shift_end).total_seconds()
                     min_seconds = (settings.min_ot_minutes or 30) * 60
                     if ot_seconds >= min_seconds:
                         ot_hrs = round(ot_seconds / 3600.0, 1)
-                        result["ot_hours"] = min(ot_hrs, float(settings.max_ot_hours or 12))
+                        result["ot_hours"] = min(ot_hrs, float(settings.max_ot_hours or 8.0))
                     
         return result
 
@@ -183,6 +190,7 @@ class PayrollSyncEngine:
     @staticmethod
     def sync_daily_attendance(db: Session, attendance: Attendance, salary_profile: SalaryProfile):
         from app.models.payroll import PayrollRecord
+        from app.models.attendance_settings import AttendanceSettings
         import calendar
 
         month_str = attendance.date.strftime("%Y-%m") if hasattr(attendance.date, 'strftime') else str(attendance.date)[:7]
@@ -192,10 +200,16 @@ class PayrollSyncEngine:
         except:
             days_in_month = 30
 
+        settings = db.query(AttendanceSettings).first()
+        ot_multiplier = (settings.ot_rate_multiplier if (settings and settings.ot_rate_multiplier is not None) else 1.5) if (settings and settings.enable_ot) else 0.0
+        sunday_multiplier = (settings.sunday_rate_multiplier if (settings and settings.sunday_rate_multiplier is not None) else 2.0) if (settings and settings.enable_sunday_tracking) else 1.0
+
         base_monthly = (salary_profile.monthly_salary if (salary_profile and salary_profile.monthly_salary) else 20000.0)
         daily_rate = base_monthly / 30.0
         hourly_rate = daily_rate / 8.0
-        sunday_hourly_rate = hourly_rate
+        
+        ot_hourly_rate = salary_profile.ot_rate_per_hour if (salary_profile and salary_profile.ot_rate_per_hour and salary_profile.ot_rate_per_hour > 0) else (hourly_rate * ot_multiplier)
+        sunday_hourly_rate = salary_profile.sunday_rate_per_hour if (salary_profile and salary_profile.sunday_rate_per_hour and salary_profile.sunday_rate_per_hour > 0) else (hourly_rate * sunday_multiplier)
 
         payroll_record = db.query(PayrollRecord).filter(
             PayrollRecord.worker_id == attendance.worker_id,
@@ -278,7 +292,7 @@ class PayrollSyncEngine:
                     elif is_sun or s == "sunday": sunday_count += 1.0
                     elif curr <= date.today(): absent += 1.0
 
-                total_ot_earned += ot_hrs * hourly_rate
+                total_ot_earned += ot_hrs * ot_hourly_rate
             else:
                 if is_hol:
                     holiday_count += 1.0
