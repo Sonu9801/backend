@@ -202,7 +202,9 @@ async def get_current_user(
                 worker_id = int(token_data.username.split(":")[1])
                 user = db.query(User).filter(User.id == worker_id).first()
                 if user:
-                    user.role = token_data.role
+                    db_role = (user.role or "").strip().lower()
+                    if db_role not in ["admin", "owner", "manager", "supervisor", "dispatcher", "dispatch", "attendance", "attendance_only", "hr", "finance"]:
+                        user.role = token_data.role
             else:
                 user = db.query(User).filter(User.email == token_data.username).first()
 

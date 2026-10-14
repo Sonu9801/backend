@@ -66,7 +66,14 @@ def _build_login_response(user: User, response: Response, request: Optional[Requ
       5. Return JSON body
     """
     sub = f"worker:{user.id}" if is_worker else user.email
-    role = "worker" if is_worker else user.role
+    
+    # Preserve user's actual privileged database role (e.g. admin, owner, supervisor)
+    user_actual_role = (user.role or "").strip().lower()
+    privileged_roles = ["admin", "owner", "manager", "supervisor", "dispatcher", "dispatch", "attendance", "attendance_only", "hr", "finance"]
+    if user_actual_role in privileged_roles:
+        role = user_actual_role
+    else:
+        role = "worker" if is_worker else (user_actual_role or "worker")
 
     # Create session
     session_id = session_store.create_session(
@@ -456,6 +463,11 @@ def refresh_access_token(
         user = db.query(User).filter(User.email == username).first()
         if not user or not user.is_active:
             raise credentials_exception
+
+    # Ensure privileged DB roles take precedence over any stale token role
+    user_actual_role = (user.role or "").strip().lower()
+    if user_actual_role in ["admin", "owner", "manager", "supervisor", "dispatcher", "dispatch", "attendance", "attendance_only", "hr", "finance"]:
+        role = user_actual_role
 
     # Validate session (if present in token)
     if session_id:
