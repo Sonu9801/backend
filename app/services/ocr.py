@@ -20,14 +20,13 @@ def extract_invoice_data(file_path: str, invoice_type: str = "expense") -> dict:
         # Configure Gemini
         genai.configure(api_key=settings.GEMINI_API_KEY)
         
-        # Candidate vision models sequence
+        # Candidate vision models sequence (active models prioritized)
         candidate_models = [
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-flash-latest",
             "gemini-2.5-flash",
-            "gemini-flash-lite-latest"
+            "gemini-flash-lite-latest",
+            "gemini-flash-latest",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro",
         ]
         
         if invoice_type == "expense":

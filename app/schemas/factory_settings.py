@@ -3,7 +3,7 @@ from typing import List, Optional
 from app.schemas.base import CamelModel
 
 class FactorySettingsBase(CamelModel):
-    facility_name: Optional[str] = "FoxFlow Manufacturing Plant"
+    facility_name: Optional[str] = "Fox Enterprises"
     address: Optional[str] = "Industrial Area, Sector 59, Faridabad"
     operating_hours: Optional[str] = "09:00 AM - 05:30 PM"
     timezone: Optional[str] = "Asia/Kolkata"
