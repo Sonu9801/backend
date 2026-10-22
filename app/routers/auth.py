@@ -247,6 +247,57 @@ def login(
     return _build_login_response(user, response, request=request)
 
 
+# ─── POST /auth/refresh ──────────────────────────────────────────────────────
+
+@router.post("/refresh")
+def refresh_token_endpoint(
+    request: Request,
+    response: Response,
+    body: Optional[RefreshTokenRequest] = None,
+    db: Session = Depends(get_db)
+):
+    token = None
+    if body and body.refresh_token:
+        token = body.refresh_token
+    if not token:
+        token = request.cookies.get("refresh_token")
+    if not token:
+        auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token missing",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        sub = payload.get("sub")
+        if not sub:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+
+    # Resolve user
+    if sub.startswith("worker:"):
+        try:
+            worker_id = int(sub.split(":")[1])
+            user = db.query(User).filter(User.id == worker_id).first()
+        except (IndexError, ValueError):
+            user = None
+    else:
+        user = db.query(User).filter(User.email == sub).first()
+
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    is_worker = sub.startswith("worker:")
+    return _build_login_response(user, response, request=request, is_worker=is_worker)
+
+
 # ─── GET /auth/setup-status ──────────────────────────────────────────────────
 
 @router.get("/setup-status")

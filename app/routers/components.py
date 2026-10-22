@@ -8,7 +8,7 @@ from app.models.component_task import ComponentTask
 from app.models.user import User
 from app.schemas.component_task import ComponentTaskCreate, ComponentTaskResponse, ComponentTaskSubmit, ComponentTaskUpdate
 
-router = APIRouter(prefix="/components", tags=["components"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/components", tags=["components"])
 
 @router.post("/start", response_model=ComponentTaskResponse)
 def start_component_task(task_in: ComponentTaskCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -110,7 +110,7 @@ def get_worker_components(worker_id: int, db: Session = Depends(get_db)):
     return worker.component_tasks
 
 @router.get("", response_model=List[ComponentTaskResponse])
-def get_all_components(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+def get_all_components(db: Session = Depends(get_db)):
     try:
         return db.query(ComponentTask).options(joinedload(ComponentTask.workers)).order_by(ComponentTask.id.desc()).all()
     except Exception as e:

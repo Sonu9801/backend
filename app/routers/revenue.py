@@ -334,7 +334,9 @@ def get_dashboard_stats(
         "outstanding": outstanding,
         "received": received,
         "average_invoice_value": average_invoice_value,
-        "collection_rate": collection_rate
+        "collection_rate": collection_rate,
+        "total_count": total_invoices_count,
+        "total_revenue": total_revenue_all
     }
 
 @router.get("/analytics")

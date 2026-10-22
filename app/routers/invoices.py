@@ -347,7 +347,9 @@ def get_dashboard_stats(
         "rejected": rejected,
         "paid": paid,
         "unpaid": unpaid,
-        "gst_this_month": gst_this_month
+        "gst_this_month": gst_this_month,
+        "total_count": total_count,
+        "total_expenses": total_expenses
     }
 
 @router.get("/analytics")
