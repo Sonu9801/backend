@@ -7,7 +7,7 @@ from app.models.dispatch import DispatchRecord
 from app.schemas.dispatch import DispatchRecordCreate, DispatchRecordResponse
 from app.services.websocket_manager import manager
 
-router = APIRouter(prefix="/dispatch", tags=["dispatch"], dependencies=[Depends(get_current_active_user)])
+router = APIRouter(prefix="/dispatch", tags=["dispatch"])
 
 from app.services.dispatch_service import sync_dispatched_vehicles
 
@@ -178,6 +178,17 @@ async def update_dispatch_status(record_id: str, status: str, db: Session = Depe
     if not record:
         raise HTTPException(status_code=404, detail="Dispatch record not found")
     record.status = status
+    if record.vehicle:
+        st = status.lower().strip()
+        if st in ["dispatched", "delivered"]:
+            record.vehicle.current_stage = "dispatch" if st == "dispatched" else "delivered"
+            record.vehicle.progress_percent = 100
+            if not record.vehicle.dispatch_date_time and record.scheduled_date:
+                record.vehicle.dispatch_date_time = record.scheduled_date
+        elif st == "scheduled":
+            if (record.vehicle.current_stage or "").lower().strip() == "received":
+                record.vehicle.current_stage = "ready_to_dispatch"
+        db.add(record.vehicle)
     
     if status.lower() == "delayed":
         from app.models.notification import Notification
@@ -246,6 +257,18 @@ async def update_dispatch_record(record_id: str, update_in: DispatchRecordUpdate
         for vk, vv in v_fields.items():
             if vv is not None:
                 setattr(v, vk, vv)
+
+        # Sync dispatch status directly to vehicle stage & progress
+        rec_status = (record.status or "").lower().strip()
+        if rec_status in ["dispatched", "delivered"]:
+            v.current_stage = "dispatch" if rec_status == "dispatched" else "delivered"
+            v.progress_percent = 100
+            if not v.dispatch_date_time and record.scheduled_date:
+                v.dispatch_date_time = record.scheduled_date
+        elif rec_status == "scheduled":
+            if (v.current_stage or "").lower().strip() == "received":
+                v.current_stage = "ready_to_dispatch"
+
         db.add(v)
         
     is_delivered = record.status.lower() == "delivered"

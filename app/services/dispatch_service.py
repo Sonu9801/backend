@@ -89,4 +89,20 @@ def sync_dispatched_vehicles(db: Session):
     for v in vehicles:
         ensure_dispatch_record_for_vehicle(db, v)
 
+    # Reverse sync: Any vehicle with a dispatched/delivered DispatchRecord must have current_stage in sync
+    dispatched_records = db.query(DispatchRecord).filter(
+        func.lower(DispatchRecord.status).in_(["dispatched", "delivered"])
+    ).all()
+    for d in dispatched_records:
+        if d.vehicle:
+            v_stage = (d.vehicle.current_stage or "").lower().strip()
+            target_stage = "delivered" if d.status.lower() == "delivered" else "dispatch"
+            if v_stage not in ["dispatch", "dispatched", "delivered"]:
+                d.vehicle.current_stage = target_stage
+                d.vehicle.progress_percent = 100
+                if not d.vehicle.dispatch_date_time and d.scheduled_date:
+                    d.vehicle.dispatch_date_time = d.scheduled_date
+                db.add(d.vehicle)
+    db.commit()
+
 
