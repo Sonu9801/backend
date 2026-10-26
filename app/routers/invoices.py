@@ -155,10 +155,16 @@ async def create_invoice(
         # Layer 4: OCR Similarity Validation
         if DuplicateDetectionService.calculate_similarity(db, invoice.model_dump()):
             db_invoice.approval_status = ApprovalStatus.POSSIBLE_DUPLICATE
-        elif db_invoice.ocr_confidence_score >= 90:
-            db_invoice.approval_status = ApprovalStatus.APPROVED
         else:
-            db_invoice.approval_status = ApprovalStatus.PENDING_REVIEW
+            # Rule: From October 2026 onwards, new invoices must NOT be auto-approved; they stay Pending until marked Paid
+            inv_date = db_invoice.invoice_date or date.today()
+            if inv_date >= date(2026, 10, 1):
+                db_invoice.approval_status = ApprovalStatus.PENDING_REVIEW
+                db_invoice.payment_status = PaymentStatus.UNPAID
+            elif db_invoice.ocr_confidence_score >= 90:
+                db_invoice.approval_status = ApprovalStatus.APPROVED
+            else:
+                db_invoice.approval_status = ApprovalStatus.PENDING_REVIEW
             
         db.add(db_invoice)
         db.commit()
@@ -440,6 +446,14 @@ async def update_invoice(
         raise HTTPException(status_code=404, detail="Invoice not found")
         
     update_dict = update_data.model_dump(exclude_unset=True)
+    
+    # Auto-synchronize approval_status with payment_status
+    if update_dict.get("payment_status") == PaymentStatus.PAID and "approval_status" not in update_dict:
+        update_dict["approval_status"] = ApprovalStatus.APPROVED
+    elif update_dict.get("payment_status") == PaymentStatus.UNPAID and "approval_status" not in update_dict:
+        inv_date = db_invoice.invoice_date or date.today()
+        if inv_date >= date(2026, 10, 1):
+            update_dict["approval_status"] = ApprovalStatus.PENDING_REVIEW
     
     for key, new_value in update_dict.items():
         old_value = getattr(db_invoice, key)
