@@ -6,13 +6,34 @@ from app.config import settings
 
 logger = logging.getLogger("uvicorn.error")
 
-if settings.DATABASE_URL.startswith("sqlite"):
+def _normalize_database_url(url: str) -> str:
+    """Auto-resolve dialect mismatch between psycopg (v3) and psycopg2 (v2)."""
+    if url.startswith("sqlite"):
+        return url
+    if url.startswith("postgresql+psycopg://"):
+        try:
+            import psycopg  # noqa: F401
+            return url
+        except ImportError:
+            logger.warning("[DB] 'psycopg' (v3) not installed. Falling back to 'psycopg2'.")
+            return url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
+    if url.startswith("postgresql://"):
+        try:
+            import psycopg2  # noqa: F401
+            return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        except ImportError:
+            return url
+    return url
+
+db_url = _normalize_database_url(settings.DATABASE_URL)
+
+if db_url.startswith("sqlite"):
     engine = create_engine(
-        settings.DATABASE_URL, connect_args={"check_same_thread": False}
+        db_url, connect_args={"check_same_thread": False}
     )
 else:
     engine = create_engine(
-        settings.DATABASE_URL,
+        db_url,
         pool_pre_ping=True,
         pool_size=10,
         max_overflow=20,
@@ -51,4 +72,3 @@ def get_db():
         yield db
     finally:
         db.close()
-
