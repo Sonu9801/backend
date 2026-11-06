@@ -124,7 +124,11 @@ class TimeEngine:
         # Punch-in > half_day_threshold -> Half Day
         # Punch-in > late_threshold -> Late
         # Punch-in <= late_threshold -> Present
-        if is_evening_shift:
+        is_sunday = (punch_date.weekday() == 6)
+        if is_sunday:
+            status = "Sunday Work"
+            late_minutes = 0
+        elif is_evening_shift:
             status = "Present"
             late_minutes = 0
         elif punch_in_local > half_day_threshold:
@@ -143,6 +147,19 @@ class TimeEngine:
         }
         
         if punch_out_local:
+            if is_sunday:
+                # Sunday rule: automatic 8h if punched out by 6:00 PM (18:00).
+                # Any work after 6:00 PM is counted as OT.
+                sunday_cutoff = punch_in_local.replace(hour=18, minute=0, second=0, microsecond=0)
+                result["status"] = "Sunday Work"
+                result["net_working_hours"] = 8.0
+                result["early_exit_minutes"] = 0
+                if punch_out_local > sunday_cutoff:
+                    ot_seconds = (punch_out_local - sunday_cutoff).total_seconds()
+                    result["ot_hours"] = round(ot_seconds / 3600.0, 1)
+                else:
+                    result["ot_hours"] = 0.0
+                return result
             # Effective punch-in for working hours calculation starts at shift_start if worker punched in early
             effective_punch_in = max(punch_in_local, shift_start)
             total_seconds = (punch_out_local - effective_punch_in).total_seconds()
@@ -201,8 +218,15 @@ class PayrollSyncEngine:
             days_in_month = 30
 
         settings = db.query(AttendanceSettings).first()
+        if settings and settings.sunday_rate_multiplier == 2.0:
+            settings.sunday_rate_multiplier = 1.0
+            settings.sunday_ot_rate = 1.0
+            try:
+                db.commit()
+            except Exception:
+                pass
         ot_multiplier = (settings.ot_rate_multiplier if (settings and settings.ot_rate_multiplier is not None) else 1.5) if (settings and settings.enable_ot) else 0.0
-        sunday_multiplier = (settings.sunday_rate_multiplier if (settings and settings.sunday_rate_multiplier is not None) else 2.0) if (settings and settings.enable_sunday_tracking) else 1.0
+        sunday_multiplier = (settings.sunday_rate_multiplier if (settings and settings.sunday_rate_multiplier is not None) else 1.0) if (settings and settings.enable_sunday_tracking) else 1.0
 
         base_monthly = (salary_profile.monthly_salary if (salary_profile and salary_profile.monthly_salary) else 20000.0)
         daily_rate = base_monthly / 30.0
@@ -265,41 +289,74 @@ class PayrollSyncEngine:
             is_sun = (curr.weekday() == 6)
             is_hol = (curr in holiday_dates)
 
-            if att:
-                s = (att.status or "").lower()
-                worked_hrs = att.net_working_hours or 0.0
-                ot_hrs = att.ot_hours or 0.0
+            s = (att.status or "").lower() if att else ""
+            worked_hrs = (att.net_working_hours or 0.0) if att else 0.0
+            ot_hrs = (att.ot_hours or 0.0) if att else 0.0
 
+            if att:
                 total_hours += worked_hrs
                 total_ot += ot_hrs
-
                 if att.late_minutes and att.late_minutes > 0:
                     late += 1
+                total_ot_earned += ot_hrs * ot_hourly_rate
 
-                if (is_sun or is_hol or s in ["sunday work", "festival work", "holiday work"]) and (s in ["present", "half day", "sunday work", "holiday work", "festival work"] or worked_hrs > 0):
-                    if is_hol or s in ["festival work", "holiday work"]: holiday_work_count += 1
-                    if is_sun or s == "sunday work": sunday_work_count += 1
+            if is_sun:
+                # Sunday is a weekly off / paid holiday.
+                # If employee worked, automatic 8h Sunday work if out before/at 6 PM, and OT after 6 PM
+                if att and (s in ["present", "half day", "sunday work", "holiday work", "festival work"] or worked_hrs > 0 or att.punch_in):
+                    sunday_work_count += 1
+                    sun_h = 8.0  # Automatic 8h
+                    sun_ot = 0.0
+                    if att.punch_out:
+                        p_out = att.punch_out
+                        try:
+                            cutoff = p_out.replace(hour=18, minute=0, second=0, microsecond=0)
+                            if p_out > cutoff:
+                                sun_ot = round((p_out - cutoff).total_seconds() / 3600.0, 1)
+                        except Exception:
+                            if worked_hrs > 8.0:
+                                sun_ot = round(worked_hrs - 8.0, 1)
+                    elif worked_hrs > 8.0:
+                        sun_ot = round(worked_hrs - 8.0, 1)
+
+                    final_ot = max(ot_hrs, sun_ot)
+                    total_ot += final_ot
+                    total_ot_earned += final_ot * ot_hourly_rate
+
+                    sunday_hours += sun_h
+                    total_sunday_earned += sun_h * sunday_hourly_rate
+                    present += 1.0
+                else:
+                    # Employee did not work on Sunday — count as paid Sunday in daily count!
+                    sunday_count += 1.0
+            elif is_hol:
+                # Factory Holiday is a paid day.
+                if att and (s in ["present", "half day", "sunday work", "holiday work", "festival work"] or worked_hrs > 0):
+                    holiday_work_count += 1
                     sunday_hours += worked_hrs
                     total_sunday_earned += worked_hrs * sunday_hourly_rate
-                    if s == "half day": half += 0.5
-                    else: present += 1.0
+                    if s == "half day":
+                        half += 0.5
+                    else:
+                        present += 1.0
                 else:
-                    if s == "present": present += 1.0
-                    elif s == "absent": absent += 1.0
-                    elif s == "half day": half += 1.0
-                    elif "leave" in s: leave_count += 1.0
-                    elif "holiday" in s: holiday_count += 1.0
-                    elif is_sun or s == "sunday": sunday_count += 1.0
-                    elif curr <= date.today(): absent += 1.0
-
-                total_ot_earned += ot_hrs * ot_hourly_rate
-            else:
-                if is_hol:
                     holiday_count += 1.0
-                elif is_sun:
-                    sunday_count += 1.0
-                elif curr <= date.today():
-                    absent += 1.0
+            else:
+                # Regular working day (Monday - Saturday)
+                if att:
+                    if s == "present":
+                        present += 1.0
+                    elif s == "half day":
+                        half += 1.0
+                    elif "leave" in s:
+                        leave_count += 1.0
+                    elif s == "absent":
+                        absent += 1.0
+                    elif curr <= date.today():
+                        absent += 1.0
+                else:
+                    if curr <= date.today():
+                        absent += 1.0
 
             curr += timedelta(days=1)
 

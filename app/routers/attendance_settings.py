@@ -15,6 +15,11 @@ def get_settings(db: Session = Depends(get_db)):
         db.add(settings)
         db.commit()
         db.refresh(settings)
+    elif settings.sunday_rate_multiplier == 2.0:
+        settings.sunday_rate_multiplier = 1.0
+        settings.sunday_ot_rate = 1.0
+        db.commit()
+        db.refresh(settings)
     return settings
 
 @router.put("", response_model=AttendanceSettingsResponse)

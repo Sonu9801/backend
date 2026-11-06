@@ -113,15 +113,37 @@ def get_payroll_summary(month: str = Query(None), db: Session = Depends(get_db))
             
             is_hol = log_date in holiday_dates
             is_sun = (log_date.weekday() == 6)
-            if (is_sun or is_hol) and (log.status in ["Present", "Half Day", "Sunday Work", "Holiday Work"] or (log.net_working_hours or 0) > 0):
-                hrs = log.net_working_hours if (log.net_working_hours and log.net_working_hours > 0) else (8.0 if log.status == "Present" else 4.0)
+            if (is_sun or is_hol) and (log.status in ["Present", "Half Day", "Sunday Work", "Holiday Work", "Festival Work"] or (log.net_working_hours or 0) > 0 or log.punch_in):
+                if is_sun:
+                    hrs = 8.0
+                    if log.punch_out:
+                        try:
+                            p_out = log.punch_out if not isinstance(log.punch_out, str) else datetime.fromisoformat(str(log.punch_out).replace("Z", "+00:00"))
+                            if getattr(p_out, "tzinfo", None) is not None:
+                                p_out_ist = p_out.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                            else:
+                                p_out_ist = p_out
+                            cutoff = p_out_ist.replace(hour=18, minute=0, second=0, microsecond=0)
+                            if p_out_ist > cutoff:
+                                worker_stats[wid]["ot_hours"] += round((p_out_ist - cutoff).total_seconds() / 3600.0, 1)
+                        except Exception:
+                            pass
+                else:
+                    hrs = log.net_working_hours if (log.net_working_hours and log.net_working_hours > 0) else (8.0 if log.status == "Present" else 4.0)
                 worker_stats[wid]["sunday_hours"] += hrs
         except Exception as e:
             print(e)
 
     att_settings = db.query(AttendanceSettings).first()
+    if att_settings and att_settings.sunday_rate_multiplier == 2.0:
+        att_settings.sunday_rate_multiplier = 1.0
+        att_settings.sunday_ot_rate = 1.0
+        try:
+            db.commit()
+        except Exception:
+            pass
     ot_multiplier = (att_settings.ot_rate_multiplier if (att_settings and att_settings.ot_rate_multiplier is not None) else 1.5) if (att_settings and att_settings.enable_ot) else 0.0
-    sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 2.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
+    sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 1.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
 
     # Compute financials
     for wid, stats in worker_stats.items():
@@ -252,8 +274,15 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
             base_salary = active_monthly_salary
 
         att_settings = db.query(AttendanceSettings).first()
+        if att_settings and att_settings.sunday_rate_multiplier == 2.0:
+            att_settings.sunday_rate_multiplier = 1.0
+            att_settings.sunday_ot_rate = 1.0
+            try:
+                db.commit()
+            except Exception:
+                pass
         ot_multiplier = (att_settings.ot_rate_multiplier if (att_settings and att_settings.ot_rate_multiplier is not None) else 1.5) if (att_settings and att_settings.enable_ot) else 0.0
-        sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 2.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
+        sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 1.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
 
         daily_rate = base_salary / 30.0
         hourly_rate = daily_rate / 8.0
@@ -285,34 +314,73 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
             is_hol = (curr_d in holiday_dates)
             l = log_map.get(curr_d)
 
-            if l:
-                s = (l.status or "").lower()
-                worked_h = l.net_working_hours or 0.0
-                ot_h = l.ot_hours or 0.0
-                ot_hrs += ot_h
+            s = (l.status or "").lower() if l else ""
+            worked_h = (l.net_working_hours or 0.0) if l else 0.0
+            ot_h = (l.ot_hours or 0.0) if l else 0.0
+            ot_hrs += ot_h
+            ot_amount += ot_h * ot_hourly_rate
 
-                if (is_sun or is_hol) and (s in ["present", "half day", "sunday work", "holiday work"] or worked_h > 0):
+            if is_sun:
+                # Sunday is a weekly off / paid holiday.
+                # If employee came to work, standard Sunday work is automatically 8h (if out before/at 6 PM),
+                # and any work after 6 PM is OT.
+                if l and (s in ["present", "half day", "sunday work", "holiday work", "festival work"] or worked_h > 0 or l.punch_in):
+                    sun_h = 8.0  # Automatic 8h
+                    sun_ot_h = 0.0
+
+                    if l.punch_out:
+                        try:
+                            p_out = l.punch_out if not isinstance(l.punch_out, str) else datetime.fromisoformat(str(l.punch_out).replace("Z", "+00:00"))
+                            if getattr(p_out, "tzinfo", None) is not None:
+                                p_out_ist = p_out.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                            else:
+                                p_out_ist = p_out
+                            cutoff = p_out_ist.replace(hour=18, minute=0, second=0, microsecond=0)
+                            if p_out_ist > cutoff:
+                                sun_ot_h = round((p_out_ist - cutoff).total_seconds() / 3600.0, 1)
+                        except Exception:
+                            if worked_h > 8.0:
+                                sun_ot_h = round(worked_h - 8.0, 1)
+                    elif worked_h > 8.0:
+                        sun_ot_h = round(worked_h - 8.0, 1)
+
+                    final_ot = max(ot_h, sun_ot_h)
+                    ot_hrs += final_ot
+                    ot_amount += final_ot * ot_hourly_rate
+
+                    sunday_hrs += sun_h
+                    sunday_amount += sun_h * sunday_hourly_rate
+                    present += 1.0
+                else:
+                    # Employee did not work on Sunday — count as paid Sunday in daily count!
+                    sunday_count += 1.0
+            elif is_hol:
+                # Factory Holiday is a paid day.
+                if l and (s in ["present", "half day", "sunday work", "holiday work", "festival work"] or worked_h > 0):
                     sunday_hrs += worked_h
                     sunday_amount += worked_h * sunday_hourly_rate
-                    if s == "half day": half += 0.5
-                    else: present += 1.0
+                    if s == "half day":
+                        half += 0.5
+                    else:
+                        present += 1.0
                 else:
-                    if s == "present": present += 1.0
-                    elif s == "absent": absent += 1.0
-                    elif s == "half day": half += 1.0
-                    elif "leave" in s: leave_count += 1.0
-                    elif "holiday" in s: holiday_count += 1.0
-                    elif is_sun or s == "sunday": sunday_count += 1.0
-                    elif curr_d <= date.today(): absent += 1.0
-
-                ot_amount += ot_h * ot_hourly_rate
-            else:
-                if is_hol:
                     holiday_count += 1.0
-                elif is_sun:
-                    sunday_count += 1.0
-                elif curr_d <= date.today():
-                    absent += 1.0
+            else:
+                # Regular working day (Monday - Saturday)
+                if l:
+                    if s == "present":
+                        present += 1.0
+                    elif s == "half day":
+                        half += 1.0
+                    elif "leave" in s:
+                        leave_count += 1.0
+                    elif s == "absent":
+                        absent += 1.0
+                    elif curr_d <= date.today():
+                        absent += 1.0
+                else:
+                    if curr_d <= date.today():
+                        absent += 1.0
 
             curr_d += timedelta(days=1)
 
@@ -592,7 +660,7 @@ def get_payroll_full_analytics(db: Session = Depends(get_db)):
             sp_base = sp.monthly_salary or 20000.0
             att_settings = db.query(AttendanceSettings).first()
             ot_multiplier = (att_settings.ot_rate_multiplier if (att_settings and att_settings.ot_rate_multiplier is not None) else 1.5) if (att_settings and att_settings.enable_ot) else 0.0
-            sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 2.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
+            sunday_multiplier = (att_settings.sunday_rate_multiplier if (att_settings and att_settings.sunday_rate_multiplier is not None) else 1.0) if (att_settings and att_settings.enable_sunday_tracking) else 1.0
 
             calc_ot_rate = ((sp_base / 30.0) / 8.0) * ot_multiplier
             calc_sun_rate = ((sp_base / 30.0) / 8.0) * sunday_multiplier

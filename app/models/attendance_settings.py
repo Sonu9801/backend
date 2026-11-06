@@ -23,8 +23,8 @@ class AttendanceSettings(Base):
     max_ot_hours = Column(Integer, default=4)
 
     enable_sunday_tracking = Column(Boolean, default=True)
-    sunday_rate_multiplier = Column(Float, default=2.0)
-    sunday_ot_rate = Column(Float, default=2.0)
+    sunday_rate_multiplier = Column(Float, default=1.0)
+    sunday_ot_rate = Column(Float, default=1.0)
 
     enable_face_verification = Column(Boolean, default=True)
     required_images = Column(Integer, default=5)
