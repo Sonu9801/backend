@@ -497,17 +497,43 @@ async def delete_worker(worker_id: int, db: Session = Depends(get_db), current_u
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
         
-    # Optional authorization check
+    # Authorization check
     if current_user.role not in ["admin", "owner", "manager"]:
         raise HTTPException(status_code=403, detail="Not authorized to delete workers")
-        
-    db.delete(worker)
-    db.commit()
-    
-    await manager.broadcast({
-        "type": "WORKER_DELETED",
-        "data": {"workerId": worker_id}
-    })
-    
-    return {"message": "Worker deleted successfully"}
+
+    # Cannot delete yourself
+    if current_user.id == worker_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    worker_name = worker.name
+    worker_emp_id = worker.employee_id
+
+    try:
+        # Nullify SET NULL FK references manually (belt-and-suspenders)
+        from sqlalchemy import text
+        db.execute(text("UPDATE leave_requests SET approved_by_id = NULL WHERE approved_by_id = :wid"), {"wid": worker_id})
+        db.execute(text("UPDATE attendance_exceptions SET approved_by_id = NULL WHERE approved_by_id = :wid"), {"wid": worker_id})
+        db.execute(text("UPDATE attendance_exceptions SET override_by_id = NULL WHERE override_by_id = :wid"), {"wid": worker_id})
+        db.execute(text("UPDATE production_jobs SET supervisor_id = NULL WHERE supervisor_id = :wid"), {"wid": worker_id})
+        db.execute(text("UPDATE qc_records SET inspector_id = NULL WHERE inspector_id = :wid"), {"wid": worker_id})
+        db.execute(text("UPDATE defect_records SET responsible_worker_id = NULL WHERE responsible_worker_id = :wid"), {"wid": worker_id})
+        db.execute(text("UPDATE job_photos SET uploaded_by_id = NULL WHERE uploaded_by_id = :wid"), {"wid": worker_id})
+        db.execute(text("UPDATE worker_daily_performance SET supervisor_id = NULL WHERE supervisor_id = :wid"), {"wid": worker_id})
+        db.execute(text("UPDATE team_daily_summary SET supervisor_id = NULL WHERE supervisor_id = :wid"), {"wid": worker_id})
+
+        db.delete(worker)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Could not delete worker: {str(e)}")
+
+    try:
+        await manager.broadcast({
+            "type": "WORKER_DELETED",
+            "data": {"workerId": worker_id, "name": worker_name, "employeeId": worker_emp_id}
+        })
+    except Exception:
+        pass
+
+    return {"message": f"Worker '{worker_name}' ({worker_emp_id}) deleted successfully"}
 
