@@ -394,8 +394,11 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
             curr_d += timedelta(days=1)
 
         paid_days = present + (half * 0.5) + leave_count + holiday_count + sunday_count
-        absent_days = max(0.0, last_day - paid_days)
-        effective_paid_days = max(0.0, 30.0 - absent_days) if absent_days > 0 else 30.0
+        # absent_days derived from paid_days (consistent with salary deduction)
+        # Also use max with direct absent counter to handle manually added absent records
+        absent_days = max(absent, max(0.0, last_day - paid_days))
+        # Recalculate effective_paid_days using the unified absent_days
+        effective_paid_days = max(0.0, 30.0 - absent_days)
         earned_base_salary = round(daily_rate * effective_paid_days, 2)
 
         bonus_amount = 0.0
@@ -437,7 +440,7 @@ def get_employee_payroll(month: str = Query(None), db: Session = Depends(get_db)
             "role": w.role or "Worker",
             "presentDays": present,
             "halfDays": half,
-            "absentDays": absent,
+            "absentDays": round(absent_days, 1),
             "paidDays": round(paid_days, 1),
             "effectivePaidDays": round(effective_paid_days, 1),
             "earnedBaseSalary": round(earned_base_salary, 2),
